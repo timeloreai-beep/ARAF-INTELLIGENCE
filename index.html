@@ -1,0 +1,1208 @@
+<!DOCTYPE html>  
+<html lang="en">  
+<head>  
+    <meta charset="UTF-8">  
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">  
+    <title>ARAF INTELLIGENCE - Pro Trading Desk</title>  
+    
+    <link rel="icon" type="image/png" sizes="192x192" href="https://i.ibb.co/hRnBwJdv/Neon-A-Growth-Icon.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="https://i.ibb.co/hRnBwJdv/Neon-A-Growth-Icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="ARAF INTELLIGENCE">
+    <meta name="theme-color" content="#ffffff">  
+    <meta name="araf-api-base" content="">
+
+    <link rel="manifest" href="manifest.json">
+    
+    <script src="https://cdn.tailwindcss.com"></script>  
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">  
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>  
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800;900&family=Hind+Siliguri:wght@400;600;700&display=swap" rel="stylesheet">  
+    
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+
+    <link rel="stylesheet" href="style.css">
+</head>  
+<body class="min-h-screen flex flex-col pb-24 select-none bg-[#f8fafc] text-slate-900">  
+
+<div id="splashScreen" class="fixed inset-0 z-[9999] flex items-center justify-center bg-[#0d1017] text-white overflow-hidden select-none p-0 md:p-6">  
+    <img id="splashFounderImg" src="https://i.ibb.co/WvKJbzb0/file-000000004c2082079db37621e6f181e3.png" referrerpolicy="no-referrer" alt="ARAF Founder" class="w-full h-full object-cover object-top md:w-auto md:max-h-[88vh] md:object-contain md:rounded-2xl md:border md:border-[#00d09c]/30 md:shadow-2xl select-none" />
+</div>  
+
+<div id="quickUnlockModal" class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-md flex items-center justify-center p-4 hidden">
+    <div class="groww-card w-full max-w-sm p-6 space-y-4 shadow-2xl text-center relative bg-white">
+        <button type="button" onclick="handleSwitchAccountOrDevice()" title="Back to Login" class="absolute top-3.5 left-3.5 text-slate-500 hover:text-[#00d09c] p-1 text-xs active:scale-95 transition flex items-center space-x-1">
+            <i class="fa-solid fa-arrow-left"></i> <span class="text-[9.5px] font-mono font-bold">Login</span>
+        </button>
+        <button type="button" onclick="dismissQuickUnlockModal()" class="absolute top-3.5 right-3.5 text-slate-500 hover:text-slate-900 p-1 text-sm"><i class="fa-solid fa-xmark"></i></button>
+        
+        <div class="w-14 h-14 rounded-2xl bg-[#00d09c]/10 border border-[#00d09c]/30 text-[#00d09c] flex items-center justify-center mx-auto text-2xl shadow-inner mt-2">
+            <i class="fa-solid fa-fingerprint animate-pulse"></i>
+        </div>
+        <h3 class="text-base font-black text-slate-900 tracking-tight heading-font" id="unlockWelcomeTitle">Welcome Back</h3>
+        <p class="text-[10.5px] text-slate-500 font-mono">Unlock App with Server-Verified 6-Digit PIN</p>
+        <div class="flex justify-center my-2">
+            <input type="password" id="pinDigitInput" maxlength="6" inputmode="numeric" autofocus oninput="if(this.value.length === 6) handlePinSubmitUnlock()" placeholder="• • • • • •" class="w-48 bg-slate-100 border-2 border-[#00d09c]/40 rounded-2xl py-2.5 text-center text-xl font-black text-slate-900 tracking-[0.4em] mono-font focus:outline-none focus:border-[#00d09c] shadow-inner">
+        </div>
+        <div id="unlockErrorMsg" class="hidden text-[10px] font-bold text-[#eb5b3c] font-mono"></div>
+        <div class="space-y-2 pt-1">
+            <button onclick="handlePinSubmitUnlock()" id="btnSubmitUnlock" class="w-full groww-btn-green py-3 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-1.5">
+                <i class="fa-solid fa-lock-open mr-1"></i> <span>Unlock App</span>
+            </button>
+            <button type="button" onclick="triggerBiometricFingerprintAuth()" id="btnBiometricQuick" class="w-full bg-slate-100 text-slate-700 font-bold py-2.5 rounded-xl text-[10.5px] border border-slate-200 flex items-center justify-center space-x-2 transition active:scale-95">
+                <i class="fa-solid fa-fingerprint text-sm text-[#00d09c]"></i> <span>Unlock with Fingerprint</span>
+            </button>
+        </div>
+
+        <button onclick="handleForgotPinReset()" class="text-[10px] text-amber-600 hover:text-amber-700 font-mono underline block mx-auto pt-2 font-bold active:scale-95 transition">
+            <i class="fa-solid fa-key mr-1"></i> Forgot PIN? Reset with OTP
+        </button>
+
+        <button onclick="handleSwitchAccountOrDevice()" class="text-[9px] text-slate-500 hover:text-slate-800 font-mono underline block mx-auto pt-1">Switch User / Login on New Device</button>
+    </div>
+</div>
+
+<div id="setupPinModal" class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-md flex items-center justify-center p-4 hidden">
+    <div class="groww-card w-full max-w-sm p-6 space-y-4 shadow-2xl text-center bg-white">
+        <div class="w-12 h-12 rounded-2xl bg-[#00d09c]/10 text-[#00d09c] flex items-center justify-center mx-auto text-xl border border-[#00d09c]/30">
+            <i class="fa-solid fa-shield-halved"></i>
+        </div>
+        <h3 class="text-sm font-black text-slate-900 heading-font">Set 6-Digit Master PIN</h3>
+        <p class="text-[10px] text-slate-500">Stored server-side with PBKDF2 salt &amp; atomic DO attempt lockout</p>
+        <div class="space-y-2 text-left">
+            <div>
+                <label class="text-[9.5px] font-bold text-slate-600 block mb-1">Create 6-Digit PIN</label>
+                <input type="password" id="newPinInput" maxlength="6" inputmode="numeric" placeholder="• • • • • •" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-center text-sm font-black tracking-widest mono-font text-slate-900 focus:outline-none focus:border-[#00d09c]">
+            </div>
+            <div>
+                <label class="text-[9.5px] font-bold text-slate-600 block mb-1">Confirm 6-Digit PIN</label>
+                <input type="password" id="confirmPinInput" maxlength="6" inputmode="numeric" placeholder="• • • • • •" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-center text-sm font-black tracking-widest mono-font text-slate-900 focus:outline-none focus:border-[#00d09c]">
+            </div>
+        </div>
+        <div id="setupPinErrorMsg" class="hidden text-[10px] font-bold text-[#eb5b3c] font-mono"></div>
+        <button onclick="handleSaveInitialPinAndBiometric()" id="btnSaveInitialPin" class="w-full groww-btn-green py-2.5 rounded-xl text-xs active:scale-95 transition">Save PIN Securely</button>
+    </div>
+</div>
+
+<div id="subscriptionLockModal" class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-md flex items-center justify-center p-4 hidden">
+    <div class="groww-card border border-amber-500/40 w-full max-w-sm p-6 space-y-4 shadow-2xl text-center relative opportunity-glow bg-white">
+        <div class="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-600 flex items-center justify-center mx-auto text-2xl shadow-inner">
+            <i class="fa-solid fa-crown animate-bounce"></i>
+        </div>
+        <div>
+            <span class="text-[9px] bg-amber-500 text-white font-mono font-black px-2 py-0.5 rounded shadow-sm">TRIAL EXPIRED</span>
+            <h3 class="text-base font-black text-slate-900 mt-1 heading-font">Upgrade to ARAF VIP</h3>
+            <p class="text-[10.5px] text-slate-500 leading-snug mt-1">Your 30-day VIP trial has ended. Renew license (activated upon server/admin confirmation).</p>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex items-center justify-between text-left">
+            <div>
+                <span class="text-[8px] text-slate-500 uppercase font-mono block">Your Unique License UID:</span>
+                <b id="displayUserTraderUid" class="text-xs font-black text-[#00d09c] mono-font tracking-wider">ARAF-XXXX-XXXX</b>
+            </div>
+            <button onclick="navigator.clipboard.writeText(document.getElementById('displayUserTraderUid').textContent); alert('UID Copied!');" class="px-2 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-[9px] font-mono border border-slate-300 active:scale-95 transition">
+                <i class="fa-solid fa-copy mr-1"></i> Copy
+            </button>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 rounded-2xl p-3 text-center">
+            <span class="text-[9px] text-slate-500 block uppercase font-bold">Monthly VIP License</span>
+            <div class="text-2xl font-black text-[#00d09c] mono-font mt-0.5">
+                <span id="displayDynamicSubPrice">₹299</span> <span class="text-xs text-slate-500 font-normal">/ month</span>
+            </div>
+            <span class="text-[9px] text-purple-600 font-mono font-bold block mt-1">Verified Merchant: ARAF DIGITAL CENTER</span>
+        </div>
+
+        <button onclick="triggerDirectUpiPayment()" class="w-full bg-[#5f259f] hover:bg-[#4d1d82] text-white font-extrabold py-3.5 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-2">
+            <i class="fa-solid fa-mobile-screen-button text-sm"></i> <span>Initiate UPI Payment Intent</span>
+        </button>
+
+        <button onclick="closeSubscriptionModal()" class="text-[9.5px] text-slate-500 hover:text-slate-800 font-mono underline mx-auto block">Explore Free Features</button>
+    </div>
+</div>
+
+<div id="authKycModal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-3">
+    <div class="groww-card w-full max-w-md p-5 space-y-4 shadow-2xl relative bg-white">
+        <button type="button" onclick="handleAuthBackNavigation()" title="Go Back" class="absolute top-4 left-4 text-slate-500 hover:text-[#00d09c] p-1.5 rounded-lg text-sm active:scale-95 transition flex items-center space-x-1">
+            <i class="fa-solid fa-arrow-left"></i> <span class="text-[10px] font-mono font-bold">Back</span>
+        </button>
+        <button type="button" onclick="handleSafeAuthModalClose()" title="Close Modal" class="absolute top-4 right-4 text-slate-500 hover:text-slate-900 p-1.5 rounded-lg text-sm active:scale-95 transition"><i class="fa-solid fa-xmark"></i></button>
+
+        <div class="text-center space-y-1 pt-2">
+            <div class="inline-flex p-3 bg-[#00d09c]/10 rounded-2xl border border-[#00d09c]/30 text-[#00d09c] mb-1">
+                <i class="fa-solid fa-shield-halved text-2xl"></i>
+            </div>
+            <h2 class="text-lg font-black text-slate-900 heading-font">ARAF <span class="text-[#00d09c]">INTELLIGENCE</span></h2>
+        </div>
+
+        <div id="authStepPhone" class="space-y-3.5">
+            <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-100 p-1 rounded-xl border border-slate-200">
+                <button type="button" onclick="switchAuthMode('LOGIN')" id="tabAuthLogin" class="flex-1 py-2 rounded-lg groww-btn-green transition shadow-sm font-bold">Client ID Login</button>
+                <button type="button" onclick="switchAuthMode('SIGNUP')" id="tabAuthSignup" class="flex-1 py-2 rounded-lg text-slate-500 hover:text-slate-900 transition font-bold">New Registration</button>
+            </div>
+
+            <div id="formClientIdLogin" class="space-y-2.5">
+                <div>
+                    <label class="text-[9.5px] font-bold text-slate-600 block mb-1">Trader UID or Email</label>
+                    <input type="text" id="loginTraderUid" maxlength="64" placeholder="e.g. RAHU-84920153 or trader@gmail.com" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs text-[#00d09c] font-black mono-font focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <div>
+                    <label class="text-[9.5px] font-bold text-slate-600 block mb-1">Password</label>
+                    <div class="relative">
+                        <input type="password" id="loginPassword" onkeydown="if(event.key==='Enter') handleTraderUidLogin()" placeholder="Enter password" class="w-full bg-slate-100 border border-slate-200 rounded-xl pl-3 pr-9 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                        <button type="button" onclick="togglePasswordVisibility('loginPassword', this)" title="Show/Hide Password" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-[#00d09c] transition">
+                            <i class="fa-solid fa-eye text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+                <button onclick="handleTraderUidLogin()" id="btnLoginUidSubmit" class="w-full groww-btn-green py-3 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-1.5 mt-1 font-bold">
+                    <i class="fa-solid fa-lock-open mr-1"></i> <span>Login Securely</span>
+                </button>
+                
+                <button type="button" onclick="openAccountRecoveryModal()" class="text-[10px] text-amber-600 hover:text-amber-700 font-mono underline block mx-auto pt-2 font-bold active:scale-95 transition">
+                    <i class="fa-solid fa-key mr-1"></i> Forgot Password / Recover Account?
+                </button>
+            </div>
+
+            <div id="formNewRegistration" class="hidden space-y-2.5">
+                <div>
+                    <label class="text-[9.5px] font-bold text-slate-600 block mb-1">Gmail / Email Address</label>
+                    <input type="email" id="signupEmailInput" placeholder="trader@gmail.com" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <div>
+                    <label class="text-[9.5px] font-bold text-slate-600 block mb-1">Create Password (Min 6 chars)</label>
+                    <div class="relative">
+                        <input type="password" id="signupPasswordInput" placeholder="••••••••" class="w-full bg-slate-100 border border-slate-200 rounded-xl pl-3 pr-9 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                        <button type="button" onclick="togglePasswordVisibility('signupPasswordInput', this)" title="Show/Hide Password" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-[#00d09c] transition">
+                            <i class="fa-solid fa-eye text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+                <div>
+                    <label class="text-[9.5px] font-bold text-slate-600 block mb-1">Confirm Password</label>
+                    <div class="relative">
+                        <input type="password" id="signupConfirmPasswordInput" placeholder="••••••••" class="w-full bg-slate-100 border border-slate-200 rounded-xl pl-3 pr-9 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                        <button type="button" onclick="togglePasswordVisibility('signupConfirmPasswordInput', this)" title="Show/Hide Password" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-[#00d09c] transition">
+                            <i class="fa-solid fa-eye text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+                <button onclick="handleNewUserSignup()" id="btnSignupSubmit" class="w-full groww-btn-green py-3 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-1.5 mt-1 font-bold">
+                    <i class="fa-solid fa-user-plus mr-1"></i> <span>Verify Gmail OTP &amp; Create Account</span>
+                </button>
+                <button onclick="handleGoogleOneTapLogin()" class="w-full bg-white hover:bg-slate-50 text-slate-900 font-extrabold py-2.5 px-3 rounded-xl text-xs active:scale-95 transition flex items-center justify-center space-x-2 border border-slate-200 shadow-sm mt-2">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
+                    <span>Quick Signup with Google</span>
+                </button>
+            </div>
+            <div id="authCustomErrorMsg" class="hidden text-[10px] font-bold text-[#eb5b3c] font-mono text-center"></div>
+        </div>
+
+        <div id="authStepKyc" class="hidden space-y-3 text-left max-h-[75vh] overflow-y-auto scrollbar-hidden pr-1">
+            <div class="bg-[#00d09c]/10 border border-[#00d09c]/30 p-2.5 rounded-xl flex items-center justify-between">
+                <div>
+                    <span class="text-[8.5px] bg-[#00d09c] text-white font-black px-1.5 py-0.2 rounded font-mono uppercase">KYC COMPLIANCE</span>
+                    <h4 class="text-xs font-black text-slate-900 mt-0.5 heading-font">Investor Profile Verification Desk</h4>
+                </div>
+                <i class="fa-solid fa-shield-halved text-[#00d09c] text-lg"></i>
+            </div>
+            <div id="firebaseEmailVerifyBackupBox" class="hidden bg-amber-500/10 border border-amber-500/30 p-2.5 rounded-xl space-y-1.5">
+                <p class="text-[9.5px] text-amber-700 font-bold">Email verification pending! Click below to receive a Firebase verification link in your inbox, then tap Recheck.</p>
+                <div class="flex space-x-2">
+                    <button type="button" onclick="sendFirebaseVerificationBackup()" class="flex-1 bg-amber-500 text-white font-black py-1.5 rounded-lg text-[9.5px]">Send Verification Link</button>
+                    <button type="button" onclick="recheckFirebaseEmailVerified()" class="flex-1 bg-slate-200 text-slate-800 font-bold py-1.5 rounded-lg text-[9.5px] border border-slate-300">I Clicked Link (Recheck)</button>
+                </div>
+            </div>
+            <div class="space-y-2">
+                <div>
+                    <label class="text-[9.5px] font-bold text-slate-600 block mb-0.5">Full Legal Name (As per PAN)</label>
+                    <input type="text" id="kycFullName" placeholder="e.g. RAHUL SHARMA" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 uppercase focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-[9.5px] font-bold text-slate-600 block mb-0.5">Date of Birth</label>
+                        <input type="date" id="kycDob" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-2.5 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                    <div>
+                        <label class="text-[9.5px] font-bold text-slate-600 block mb-0.5">Contact Number</label>
+                        <input type="tel" id="kycPhone" maxlength="10" placeholder="10-digit mobile" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 mono-font focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-[9.5px] font-bold text-slate-600 block mb-0.5">PAN Number</label>
+                        <input type="text" id="kycPanNumber" maxlength="10" placeholder="ABCDE1234F" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs text-amber-600 uppercase font-black mono-font focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                    <div>
+                        <label class="text-[9.5px] font-bold text-slate-600 block mb-0.5">Aadhaar Last 4</label>
+                        <input type="password" id="kycAadhaarLast4" maxlength="4" placeholder="•••• 8912" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 text-center mono-font focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-[9.5px] font-bold text-slate-600 block mb-0.5">Income Bracket</label>
+                        <select id="kycIncome" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-2 py-2 text-[11px] text-slate-900 focus:outline-none">
+                            <option value="1_5L">₹1L - ₹5L</option>
+                            <option value="5_15L" selected>₹5L - ₹15L</option>
+                            <option value="15_25L">₹15L - ₹25L</option>
+                            <option value="25L_PLUS">Above ₹25L (HNI)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-[9.5px] font-bold text-slate-600 block mb-0.5">Experience</label>
+                        <select id="kycExperience" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-2 py-2 text-[11px] text-slate-900 focus:outline-none">
+                            <option value="INTERMEDIATE" selected>1-3 Yrs</option>
+                            <option value="PRO">3+ Yrs</option>
+                            <option value="BEGINNER">Under 1 Yr</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label class="text-[9.5px] font-bold text-slate-600 block mb-0.5">Trading Authorization</label>
+                    <select id="kycSegment" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-2 py-2 text-[11px] text-[#00d09c] font-bold focus:outline-none">
+                        <option value="ALL">NSE F&amp;O + Equity Cash + Crypto Desk</option>
+                        <option value="FNO_ONLY">NSE Derivatives Only</option>
+                        <option value="CRYPTO_ONLY">Crypto Futures Only</option>
+                    </select>
+                </div>
+                <div class="p-2.5 rounded-xl bg-slate-100 border border-slate-200">
+                    <label class="flex items-start space-x-2 cursor-pointer">
+                        <input type="checkbox" id="kycRiskConsent" class="mt-0.5 rounded border-slate-300 text-[#00d09c] focus:ring-0 bg-white">
+                        <span class="text-[9px] text-slate-600 leading-snug">I declare all details authentic for manual admin compliance review. I understand derivatives carry capital risk and I trade within disciplined limits.</span>
+                    </label>
+                </div>
+            </div>
+            <div id="kycErrorBanner" class="hidden text-[10px] font-mono font-bold text-[#eb5b3c] text-center"></div>
+            <button onclick="handleSubmitForVerification()" id="btnSubmitKyc" class="w-full groww-btn-green py-3 rounded-xl text-xs active:scale-95 transition flex items-center justify-center space-x-1.5 font-bold">
+                <i class="fa-solid fa-file-shield"></i> <span>Submit Verification to Admin Review</span>
+            </button>
+            <button type="button" onclick="backFromKycToAuthTabs()" class="w-full bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold py-2 rounded-xl text-[10.5px] transition border border-slate-300 active:scale-95 flex items-center justify-center space-x-1.5">
+                <i class="fa-solid fa-arrow-left text-xs"></i> <span>Back to Client ID Login / Registration</span>
+            </button>
+        </div>
+
+        <div id="authStepPending" class="hidden space-y-3 text-center py-3">
+            <div class="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/40 text-amber-600 flex items-center justify-center mx-auto text-xl">
+                <i class="fa-solid fa-user-clock animate-pulse"></i>
+            </div>
+            <h3 class="text-sm font-black text-slate-900 heading-font">Pending Admin Approval</h3>
+            <p class="text-[11px] text-slate-600 leading-relaxed">Your compliance profile has been submitted to ARAF Admin Desk. Your app will unlock immediately upon verification.</p>
+            <div class="bg-slate-100 border border-slate-200 rounded-xl p-3 max-w-xs mx-auto text-left font-mono text-[10px] space-y-1.5">
+                <div class="flex justify-between text-slate-600"><span>Trader Name:</span> <b id="pendingUserName" class="text-slate-900 uppercase font-bold">-</b></div>
+                <div class="flex justify-between text-slate-600"><span>Trader UID:</span> <b id="pendingUserUid" class="text-[#00d09c] font-black">-</b></div>
+                <div class="flex justify-between text-slate-600"><span>PAN Masked:</span> <b id="pendingUserPan" class="text-amber-600 font-bold">-</b></div>
+                <div class="flex justify-between text-slate-600"><span>Status:</span> <span class="text-amber-600 font-black">PENDING_ADMIN_REVIEW</span></div>
+            </div>
+            <div class="flex space-x-2 pt-1">
+                <button type="button" onclick="recheckAdminApprovalStatus()" class="flex-1 groww-btn-green py-2.5 rounded-xl text-[10.5px] active:scale-95 transition">
+                    <i class="fa-solid fa-arrows-rotate mr-1"></i> Check Status
+                </button>
+                <button type="button" onclick="handleSwitchAccountOrDevice()" class="flex-1 bg-slate-200 text-slate-800 font-bold py-2.5 rounded-xl text-[10.5px] border border-slate-300 active:scale-95 transition">
+                    Switch Account
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="accountRecoveryModal" class="fixed inset-0 z-[99999] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-3 hidden">
+    <div class="groww-card w-full max-w-sm p-5 space-y-4 shadow-2xl relative border border-[#00d09c]/30 opportunity-glow bg-white">
+        <button onclick="closeAccountRecoveryModal()" title="Back" class="absolute top-3 right-3 text-slate-500 hover:text-slate-900 p-1 text-sm"><i class="fa-solid fa-xmark"></i></button>
+
+        <div class="text-center space-y-1">
+            <div class="inline-flex p-2.5 bg-amber-500/10 rounded-2xl border border-amber-500/30 text-amber-600 mb-1">
+                <i class="fa-solid fa-shield-cat text-2xl"></i>
+            </div>
+            <h3 class="text-sm font-black text-slate-900 heading-font">ARAF Intelligence Vault</h3>
+            <p class="text-[10px] text-slate-500 font-mono">Email OTP Verification &amp; Recovery Desk</p>
+        </div>
+
+        <div id="recoveryStepEmail" class="space-y-3">
+            <div>
+                <label class="text-[9.5px] font-bold text-slate-600 block mb-1">Enter Registered Email</label>
+                <input type="email" id="recoveryEmailInput" placeholder="trader@gmail.com" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#00d09c]">
+            </div>
+            <button onclick="sendRecoveryOtpToEmail()" id="btnSendOtp" class="w-full groww-btn-green py-2.5 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-1.5 font-bold">
+                <i class="fa-solid fa-paper-plane mr-1"></i> <span>Send Password Reset Link (Firebase)</span>
+            </button>
+            <button onclick="sendPinResetServerOtp()" id="btnSendPinOtp" class="hidden w-full bg-amber-500 hover:bg-amber-600 text-white py-2.5 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-1.5 font-bold">
+                <i class="fa-solid fa-key mr-1"></i> <span>Send 6-Digit PIN Reset OTP</span>
+            </button>
+        </div>
+
+        <div id="recoveryStepOtp" class="hidden space-y-3">
+            <div class="bg-slate-100 p-2 rounded-xl border border-slate-200 text-center">
+                <span class="text-[9px] text-slate-500 block">6-Digit OTP Sent to Inbox</span>
+                <b id="displayTargetEmail" class="text-[10px] text-[#00d09c] mono-font"></b>
+            </div>
+            <div>
+                <label class="text-[9.5px] font-bold text-slate-600 block mb-1 text-center">Enter 6-Digit OTP</label>
+                <input type="text" id="recoveryOtpInput" maxlength="6" inputmode="numeric" placeholder="• • • • • •" class="w-full bg-slate-100 border-2 border-amber-500/50 rounded-xl py-2 text-center text-lg font-black tracking-[0.3em] mono-font text-slate-900 focus:outline-none focus:border-amber-500">
+            </div>
+            <button onclick="verifyRecoveryOtp()" id="btnVerifyOtpSubmit" class="w-full bg-amber-500 hover:bg-amber-600 text-white font-black py-2.5 rounded-xl text-xs active:scale-95 transition shadow-lg">
+                Verify OTP Code
+            </button>
+            <button onclick="backToSignupEmailStep()" class="text-[9px] text-slate-500 hover:text-slate-900 underline block mx-auto pt-1 font-mono">Wrong Email? Change Email</button>
+        </div>
+
+        <div id="recoveryStepReset" class="hidden space-y-3 text-left">
+            <div class="bg-slate-100 border border-[#00d09c]/40 p-2.5 rounded-xl text-center">
+                <span class="text-[8.5px] text-slate-500 uppercase font-mono block">Verified Account:</span>
+                <h4 id="recoveredTraderUidText" class="text-sm font-black text-[#00d09c] mono-font tracking-wider mt-0.5 select-all">-</h4>
+            </div>
+            <div>
+                <label class="text-[9.5px] font-bold text-slate-600 block mb-1">Set New 6-Digit Master PIN</label>
+                <input type="password" id="resetNewPin" maxlength="6" inputmode="numeric" placeholder="• • • • • •" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-center text-sm font-black tracking-widest mono-font text-slate-900 focus:outline-none focus:border-[#00d09c]">
+            </div>
+            <button onclick="finalizeAccountCredentialsReset()" class="w-full groww-btn-green py-2.5 rounded-xl text-xs active:scale-95 transition shadow-lg font-bold">
+                Save New PIN &amp; Unlock
+            </button>
+        </div>
+
+        <div id="recoveryErrorMsg" class="hidden text-[10px] font-mono font-bold text-[#eb5b3c] text-center"></div>
+
+        <button onclick="closeAccountRecoveryModal()" class="text-[9.5px] text-slate-500 hover:text-slate-800 font-mono underline block mx-auto pt-1">
+            Back to Login
+        </button>
+    </div>
+</div>
+
+<div id="intradaySquareOffModal" class="fixed inset-0 z-[9999] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+    <div class="groww-card border-2 border-[#eb5b3c] w-full max-w-sm p-5 space-y-4 shadow-2xl text-center radar-blink-sell bg-white">
+        <div class="w-14 h-14 rounded-2xl bg-[#eb5b3c]/15 border border-[#eb5b3c]/40 text-[#eb5b3c] flex items-center justify-center mx-auto text-2xl">
+            <i class="fa-solid fa-clock animate-bounce"></i>
+        </div>
+        <div>
+            <span class="text-[9px] bg-[#eb5b3c] text-white font-mono font-black px-2 py-0.5 rounded uppercase">3:10 PM INTRADAY ALERT</span>
+            <h3 class="text-base font-black text-slate-900 mt-1.5 heading-font">Square Off All MIS Positions!</h3>
+            <p class="text-[11px] text-slate-600 leading-relaxed mt-1">It is 3:10 PM IST! Square off all open intraday positions before your broker executes auto-square off penalties.</p>
+        </div>
+        <button onclick="document.getElementById('intradaySquareOffModal').classList.add('hidden'); stopAiVoice();" class="w-full groww-btn-red py-3 rounded-xl text-xs active:scale-95 transition">
+            Acknowledge &amp; Go to Trade Desk
+        </button>
+    </div>
+</div>
+
+<div id="liveOpportunityToast" class="hidden fixed top-12 left-3 right-3 z-30 bg-white border-2 border-[#00d09c] rounded-2xl p-3 shadow-2xl animate-bounce cursor-pointer" onclick="scrollToCurrentOpportunityCard()">  
+    <div class="flex items-start justify-between">  
+        <div class="flex items-start space-x-2.5">  
+            <div id="toastIconBox" class="w-8 h-8 rounded-xl bg-[#00d09c]/20 text-[#00d09c] flex items-center justify-center text-xs shrink-0 mt-0.5 shadow-sm"><i class="fa-solid fa-crosshairs"></i></div>  
+            <div>  
+                <div class="flex items-center space-x-1.5">  
+                    <span id="toastBadge" class="bg-[#00d09c] text-white text-[8.5px] font-black px-1.5 py-0.5 rounded uppercase font-mono">HEURISTIC SETUP</span>  
+                    <h4 id="toastStockTitle" class="text-xs font-bold text-slate-900 heading-font">NIFTY 50</h4>  
+                </div>  
+                <p id="toastCandleDesc" class="text-[10px] text-slate-600 mt-0.5 leading-tight font-medium"></p>  
+            </div>  
+        </div>  
+        <button onclick="event.stopPropagation(); dismissOpportunityToast()" class="text-slate-400 hover:text-slate-900 text-xs p-1"><i class="fa-solid fa-xmark"></i></button>  
+    </div>  
+</div>  
+
+<div id="opportunityPopupModal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+    <div onmouseenter="pauseOpportunityPopupTimer()" onmouseleave="resumeOpportunityPopupTimer()" class="groww-card border border-[#00d09c]/40 w-full max-w-md p-4 space-y-3 shadow-2xl opportunity-glow relative text-center bg-white">
+        <button type="button" onclick="dismissOpportunityPopup()" aria-label="Close opportunity" title="Close" class="absolute top-2 right-2 w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center transition"><i class="fa-solid fa-xmark text-sm"></i></button>
+        <div class="flex items-center justify-between text-[9px] font-mono">
+            <span id="oppPopupQueueBadge" class="bg-slate-100 text-slate-700 px-2 py-0.5 rounded border border-slate-200 font-bold">QUEUE: 1/1</span>
+            <span id="oppPopupTimerBadge" class="bg-[#00d09c] text-white px-2.5 py-0.5 rounded-full font-black">⏱ 15s</span>
+        </div>
+        <div>
+            <div class="flex items-center justify-center space-x-2">
+                <span id="oppPopupProbBadge" class="text-[8.5px] bg-[#00d09c] text-white font-mono font-black px-2 py-0.5 rounded shadow-sm">CALIBRATED ≥70%</span>
+                <span id="oppPopupConfluenceBadge" class="text-[8.5px] bg-slate-100 text-slate-700 font-mono font-bold px-2 py-0.5 rounded border border-slate-200">FRESH</span>
+            </div>
+            <h2 id="oppPopupTitle" class="text-base font-black text-slate-900 mt-1 heading-font">SETUP DETECTED</h2>
+            <p id="oppPopupSubtitle" class="text-[10.5px] text-slate-600 font-medium mt-0.5">Orderbook &amp; regime setup detected.</p>
+            <p id="oppPopupProbNote" class="text-[8.5px] text-slate-500 font-mono font-bold mt-1">Model: -- • Sample: -- • Horizon: --</p>
+        </div>
+        <div class="grid grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-2xl border border-slate-200 mono-font text-[10px]">
+            <div><span class="text-slate-500 block text-[8px] uppercase font-bold">Auto Entry</span><b id="oppPopupEntry" class="text-slate-900 text-xs font-black">--</b></div>
+            <div><span class="text-slate-500 block text-[8px] uppercase font-bold">Auto SL</span><b id="oppPopupSL" class="text-[#eb5b3c] text-xs font-black">--</b></div>
+            <div><span class="text-slate-500 block text-[8px] uppercase font-bold">Auto Target</span><b id="oppPopupTarget" class="text-[#00d09c] text-xs font-black">--</b></div>
+        </div>
+        <div class="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-left mono-font text-[9.5px]">
+            <div>
+                <label class="text-[8px] text-slate-500 uppercase font-bold block mb-0.5">Your Quantity Only</label>
+                <input type="number" step="any" id="oppPopupQtyInput" onfocus="pauseOpportunityPopupTimer()" oninput="updateOppPopupRiskPreview()" class="w-full bg-white border border-[#00d09c]/50 rounded-lg px-2 py-1 text-xs font-black text-slate-900 focus:outline-none">
+            </div>
+            <div class="flex flex-col justify-center text-right">
+                <span class="text-[8px] text-slate-500 uppercase font-bold">Net R:R &amp; Risk</span>
+                <b id="oppPopupRiskPreview" class="text-slate-800 text-[10px]">R:R -- • ₹--</b>
+                <span id="oppPopupEventNote" class="text-[8px] text-amber-600 font-bold">Event: NORMAL</span>
+            </div>
+        </div>
+        <div class="space-y-2 pt-0.5">
+            <button onclick="executeOpportunityTradeNow()" id="btnExecuteOpp" class="w-full groww-btn-green py-3 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-2">
+                <i class="fa-solid fa-bolt text-sm"></i> <span>One-Click Authorize &amp; Trade</span>
+            </button>
+            <div class="grid grid-cols-3 gap-1.5">
+                <button type="button" onclick="repeatOpportunityVoice()" class="bg-slate-100 hover:bg-slate-200 text-[#00d09c] font-bold py-2 rounded-xl text-[9.5px] transition border border-slate-200"><i class="fa-solid fa-volume-high mr-1"></i> Replay</button>
+                <button type="button" onclick="advanceOpportunityQueue()" class="bg-slate-100 hover:bg-slate-200 text-amber-600 font-bold py-2 rounded-xl text-[9.5px] transition border border-slate-200"><i class="fa-solid fa-forward mr-1"></i> Next</button>
+                <button type="button" onclick="dismissOpportunityPopup()" class="bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold py-2 rounded-xl text-[9.5px] transition">Dismiss</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="assetDetailModal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm hidden flex items-end sm:items-center justify-center p-0 sm:p-3">
+    <div class="groww-card rounded-t-3xl sm:rounded-3xl w-full max-w-md p-4 space-y-3 max-h-[92vh] overflow-y-auto scrollbar-hidden shadow-2xl bg-white">
+        <div class="flex items-start justify-between border-b border-slate-200 pb-2.5">
+            <div>
+                <h3 id="assetDetailTitle" class="text-sm font-extrabold text-slate-900 heading-font">Asset Details</h3>
+                <p id="assetDetailSubtitle" class="text-[9px] text-slate-500 mono-font mt-0.5">Live market details</p>
+            </div>
+            <button type="button" onclick="closeAssetDetailModal()" aria-label="Close asset details" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center"><i class="fa-solid fa-xmark text-sm"></i></button>
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-[10px] mono-font">
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Open</span><b id="assetDetailOpen" class="text-slate-900">--</b></div>
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Prev Close</span><b id="assetDetailPrevClose" class="text-slate-900">--</b></div>
+            <div class="bg-[#00d09c]/10 border border-[#00d09c]/20 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Day High / Low</span><b id="assetDetailDayRange" class="text-[#059669]">-- / --</b></div>
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">52W High / Low</span><b id="assetDetail52Range" class="text-slate-900">-- / --</b></div>
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Volume</span><b id="assetDetailVolume" class="text-slate-900">--</b></div>
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Sector</span><b id="assetDetailSector" class="text-slate-900">--</b></div>
+        </div>
+        <div id="assetDetailNews" class="space-y-1.5 text-[10px]"></div>
+        <div class="grid grid-cols-2 gap-2">
+            <button type="button" id="assetDetailChartBtn" class="groww-btn-green py-2.5 rounded-xl text-xs font-bold">Open Chart</button>
+            <button type="button" id="assetDetailTradeBtn" class="bg-slate-100 border border-slate-200 text-slate-800 py-2.5 rounded-xl text-xs font-bold">Trade</button>
+        </div>
+    </div>
+</div>
+
+<div id="analysisModal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm hidden flex items-end sm:items-center justify-center p-0 sm:p-3">  
+    <div class="groww-card rounded-t-3xl sm:rounded-3xl w-full max-w-md p-4 space-y-3 max-h-[92vh] overflow-y-auto scrollbar-hidden shadow-2xl bg-white">  
+        <div class="flex items-center justify-between border-b border-slate-200 pb-2.5">  
+            <div><h3 id="modalAssetTitle" class="text-sm font-extrabold text-slate-900 heading-font">ASSET NAME</h3><p id="modalAssetPrice" class="text-xs text-[#00d09c] mono-font font-bold">PRICE</p></div>  
+            <button onclick="closeAnalysisModal()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center active:scale-95 transition"><i class="fa-solid fa-xmark text-sm"></i></button>  
+        </div>  
+        <div class="grid grid-cols-2 gap-2 mono-font text-xs">  
+            <div class="bg-[#00d09c]/10 p-2.5 rounded-xl border border-[#00d09c]/20 flex items-center justify-between"><div><span class="text-[9px] text-slate-500 block font-sans">🔼 Session High</span><span id="modalTodayHigh" class="text-[#00d09c] font-bold">-</span></div><i class="fa-solid fa-arrow-trend-up text-[#00d09c] text-xs"></i></div>  
+            <div class="bg-[#eb5b3c]/10 p-2.5 rounded-xl border border-[#eb5b3c]/20 flex items-center justify-between"><div><span class="text-[9px] text-slate-500 block font-sans">🔽 Session Low</span><span id="modalTodayLow" class="text-[#eb5b3c] font-bold">-</span></div><i class="fa-solid fa-arrow-trend-down text-[#eb5b3c] text-xs"></i></div>  
+        </div>  
+        <div class="grid grid-cols-2 gap-2 mono-font text-xs">  
+            <div class="bg-slate-50 p-2 rounded-xl border border-slate-200 flex items-center justify-between"><div><span class="text-[9px] text-slate-500 block font-sans">🟢 Support (S1)</span><span id="modalSupportLevel" class="text-[#00d09c] font-bold">-</span></div><span class="text-[8px] bg-[#00d09c]/20 text-[#00d09c] px-1 py-0.5 rounded font-bold">S1</span></div>  
+            <div class="bg-slate-50 p-2 rounded-xl border border-slate-200 flex items-center justify-between"><div><span class="text-[9px] text-slate-500 block font-sans">🔴 Resistance (R1)</span><span id="modalResistanceLevel" class="text-[#eb5b3c] font-bold">-</span></div><span class="text-[8px] bg-[#eb5b3c]/20 text-[#eb5b3c] px-1 py-0.5 rounded font-bold">R1</span></div>  
+        </div>  
+        <div class="space-y-2 text-xs">  
+            <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-200 space-y-1"><h4 class="font-bold text-amber-600 flex items-center text-[11px]"><i class="fa-solid fa-circle-question mr-1.5"></i> <span id="modalWhatTitle">What's Happening?</span></h4><p id="modalWhatText" class="text-slate-700 text-[10.5px] leading-relaxed"></p></div>  
+            <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-200 space-y-1"><h4 class="font-bold text-blue-600 flex items-center text-[11px]"><i class="fa-solid fa-magnifying-glass-chart mr-1.5"></i> <span id="modalWhyTitle">Why It's Happening?</span></h4><p id="modalWhyText" class="text-slate-700 text-[10.5px] leading-relaxed"></p></div>  
+            <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-200 space-y-1"><h4 class="font-bold text-[#00d09c] flex items-center text-[11px]"><i class="fa-solid fa-calculator mr-1.5"></i> <span id="modalHowTitle">How to Trade?</span></h4><p id="modalHowText" class="text-slate-700 text-[10.5px] leading-relaxed"></p></div>  
+        </div>  
+        <div class="grid grid-cols-3 gap-1.5 bg-slate-50 p-2 rounded-xl border border-slate-200 mono-font text-[10px]">  
+            <div class="text-center"><span class="text-slate-500 text-[9px] block font-sans">Entry</span><span id="modalEntry" class="text-[#00d09c] font-bold">-</span></div>  
+            <div class="text-center border-l border-slate-200"><span class="text-slate-500 text-[9px] block font-sans">Target</span><span id="modalTarget" class="text-slate-900 font-bold">-</span></div>  
+            <div class="text-center border-l border-slate-200"><span class="text-slate-500 text-[9px] block font-sans">Stop Loss</span><span id="modalSl" class="text-[#eb5b3c] font-bold">-</span></div>  
+        </div>  
+        <button onclick="closeAnalysisModal()" class="w-full groww-btn-green py-2.5 rounded-xl text-xs active:scale-95 transition shadow-lg">Return to Dashboard</button>  
+    </div>  
+</div>  
+
+<div id="newsReaderModal" class="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm hidden flex items-end sm:items-center justify-center p-0 sm:p-3">
+    <div class="groww-card rounded-t-3xl sm:rounded-3xl w-full max-w-md p-4 space-y-3 max-h-[88vh] flex flex-col shadow-2xl bg-white">
+        <div class="flex items-start justify-between border-b border-slate-200 pb-2.5">
+            <div class="pr-2">
+                <span id="newsModalSource" class="text-[8.5px] bg-[#00d09c]/15 text-[#059669] px-2 py-0.5 rounded font-mono font-bold">MARKET WIRE</span>
+                <h3 id="newsModalTitle" class="text-sm font-black text-slate-900 mt-1 leading-snug heading-font">Loading...</h3>
+            </div>
+            <button onclick="closeNewsReaderModal()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center shrink-0"><i class="fa-solid fa-xmark text-sm"></i></button>
+        </div>
+        <div id="newsModalBody" class="flex-1 overflow-y-auto text-[11.5px] text-slate-700 leading-relaxed space-y-2.5 pr-1 font-sans"></div>
+        <div class="flex space-x-2 pt-2 border-t border-slate-200">
+            <button type="button" onclick="closeNewsReaderModal()" class="px-4 bg-slate-100 text-slate-700 font-bold py-2.5 rounded-xl text-xs border border-slate-200">Close</button>
+        </div>
+    </div>
+</div>
+
+<div class="bg-slate-900 text-slate-200 border-b border-slate-800 py-1.5 overflow-hidden text-[10px] mono-font flex items-center sticky top-0 z-30 shadow-md">  
+    <div class="bg-[#00d09c] text-slate-950 px-2.5 py-0.5 text-[8.5px] font-black uppercase tracking-wider border-r border-slate-800 flex items-center shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-slate-950 mr-1.5 animate-ping"></span> LIVE</div>  
+    <div class="overflow-hidden w-full whitespace-nowrap">  
+        <div class="ticker-wrapper space-x-7 px-4 text-slate-400 font-medium">  
+            <span>NIFTY: <b id="tickerNifty" class="ml-1 text-white font-bold">Connecting...</b> <span id="tickerNiftyChange" class="text-slate-400 ml-0.5 text-[9px] font-bold"></span></span>  
+            <span>BANKNIFTY: <b id="tickerBankNifty" class="ml-1 text-white font-bold">Connecting...</b> <span id="tickerBankNiftyChange" class="text-slate-400 ml-0.5 text-[9px] font-bold"></span></span>  
+            <span>SENSEX: <b id="tickerSensex" class="ml-1 text-white font-bold">Connecting...</b> <span id="tickerSensexChange" class="text-slate-400 ml-0.5 text-[9px] font-bold"></span></span>  
+            <span>BTC/USDT: <b id="tickerBtc" class="ml-1 text-[#00d09c] font-bold">Stream...</b></span>  
+            <span>ETH/USDT: <b id="tickerEth" class="ml-1 text-[#00d09c] font-bold">Stream...</b></span>  
+            <span>PAXG/USDT: <b id="tickerGold" class="ml-1 text-amber-500 font-bold">Stream...</b></span>  
+            <span>INDIA VIX: <b id="tickerVix" class="ml-1 text-slate-400 font-bold">-- (WAIT)</b></span>  
+        </div>  
+    </div>  
+</div>  
+
+<header class="bg-white/90 backdrop-blur-xl border-b border-slate-200 px-4 py-2.5 flex items-center justify-between sticky top-0 z-30 shadow-sm">  
+    <div class="flex items-center space-x-2.5">  
+        <img src="https://i.ibb.co/hRnBwJdv/Neon-A-Growth-Icon.png" alt="ARAF Logo" style="width: 32px; height: 32px; object-fit: contain; border-radius: 9px; border: 1px solid rgba(0,208,156,0.3);" />  
+        <div>  
+            <div class="flex items-center space-x-1.5"><h1 class="text-xs sm:text-sm font-black tracking-tight text-slate-900 heading-font">ARAF <span class="text-[#00d09c]">INTELLIGENCE</span></h1></div>
+            <p id="hudUserStatusText" class="text-[9px] text-slate-600 flex items-center font-mono mt-0.5"><span class="w-1.5 h-1.5 rounded-full bg-[#00d09c] animate-pulse mr-1"></span> <span id="hudDynamicUserName">Trader</span></p>  
+        </div>  
+    </div>  
+    <div class="flex items-center space-x-1.5">
+        <span id="hudFloatingMtmChip" onclick="switchTab('ShoonyaPos')" title="Live Portfolio MTM" class="hidden cursor-pointer text-[9.5px] font-mono font-black px-2 py-1 rounded-xl bg-slate-100 border border-slate-200 text-[#00d09c] shadow-sm">₹0.00</span>
+        <button onclick="switchTab('Chart')" title="Chart" class="px-2.5 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 flex items-center space-x-1.5 active:scale-95 transition hover:bg-slate-200">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="9" width="3" height="7" rx="1" fill="#ef4444"/><path d="M4.5 7V18" stroke="#ef4444" stroke-width="1.5"/><rect x="10" y="5" width="3" height="10" rx="1" fill="#00d09c"/><path d="M11.5 3V17" stroke="#00d09c" stroke-width="1.5"/><rect x="17" y="8" width="3" height="8" rx="1" fill="#ef4444"/><path d="M18.5 6V18" stroke="#ef4444" stroke-width="1.5"/></svg>
+            <span class="text-[9px] font-bold">Chart</span>
+        </button>
+        <button onclick="switchTab('Settings')" title="Settings" class="w-8 h-8 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 flex items-center justify-center active:scale-95 transition hover:bg-slate-200"><i class="fa-solid fa-gear text-xs"></i></button>
+    </div>
+</header>
+
+<main id="tabContentHome" class="tab-page p-3 space-y-3 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full">  
+    <div class="space-y-2">  
+        <div class="relative">  
+            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><i class="fa-solid fa-magnifying-glass text-[#00d09c] text-xs"></i></div>  
+            <input type="text" id="stockSearchInput" oninput="handleRealStockSearch()" placeholder="Search any NSE/BSE/Crypto Stock (e.g. MRF, SBIN, SOL)..." class="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-8 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#00d09c] shadow-sm transition">  
+            <button onclick="clearSearchInput()" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-900"><i class="fa-solid fa-circle-xmark text-xs"></i></button>  
+        </div>  
+        <div id="searchNewsBox" class="hidden absolute left-0 right-0 top-full mt-1 z-20 bg-white border border-[#00d09c]/30 rounded-xl p-2.5 text-[11px] space-y-2 shadow-xl max-h-72 overflow-y-auto">
+            <div class="flex items-center justify-between text-[#059669] font-bold">
+                <span><i class="fa-solid fa-bolt mr-1"></i> Global Asset Search:</span>
+                <span id="searchPageRangeBadge" class="text-[9px] bg-[#00d09c]/20 text-[#059669] px-1.5 py-0.5 rounded mono-font font-bold">0-0 of 0</span>
+            </div>
+            <div class="flex space-x-1 overflow-x-auto scrollbar-hidden text-[9px] font-mono font-bold" id="searchExchangeFilterBar">
+                <button type="button" onclick="setSearchExchangeFilter('ALL')" id="srchExchBtn_ALL" class="px-2 py-0.5 rounded bg-[#00d09c] text-white font-black">ALL</button>
+                <button type="button" onclick="setSearchExchangeFilter('NSE')" id="srchExchBtn_NSE" class="px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200">NSE</button>
+                <button type="button" onclick="setSearchExchangeFilter('BSE')" id="srchExchBtn_BSE" class="px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200">BSE</button>
+                <button type="button" onclick="setSearchExchangeFilter('BINANCE')" id="srchExchBtn_BINANCE" class="px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200">CRYPTO</button>
+                <button type="button" onclick="setSearchExchangeFilter('NFO')" id="srchExchBtn_NFO" class="px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200">F&amp;O</button>
+            </div>
+            <p id="searchNewsText" class="text-slate-700 text-[10px] leading-relaxed"></p>
+            <div id="searchPaginationBar" class="hidden flex items-center justify-between pt-1 border-t border-[#00d09c]/20 text-[9.5px] font-mono">
+                <button type="button" onclick="changeSearchPage(-1)" id="btnSearchPrev" class="px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-700 font-bold">← Prev</button>
+                <span id="searchPageInfo" class="text-slate-700 font-bold">Page 1 / 1</span>
+                <button type="button" onclick="changeSearchPage(1)" id="btnSearchNext" class="px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-700 font-bold">Next →</button>
+            </div>
+        </div>
+    </div>  
+
+    <div class="flex space-x-1.5 overflow-x-auto scrollbar-hidden py-0.5 text-[11px] font-bold" id="categoryFilterBar">
+        <button onclick="filterCategory('opportunities')" id="catBtn_opportunities" class="px-3.5 py-1.5 rounded-xl bg-[#00d09c] text-white font-black shadow-md shrink-0 transition">💎 Opportunities (70%+)</button>
+        <button onclick="filterCategory('gainers')" id="catBtn_gainers" class="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 shadow-sm shrink-0 transition">🚀 Top 10 Gainers</button>
+        <button onclick="filterCategory('losers')" id="catBtn_losers" class="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 shadow-sm shrink-0 transition">🩸 Top 10 Losers</button>
+        <button onclick="filterCategory('volume')" id="catBtn_volume" class="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 shadow-sm shrink-0 transition">📊 High Volume</button>
+        <button onclick="filterCategory('volspike')" id="catBtn_volspike" class="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 shadow-sm shrink-0 transition">⚡ Volatility Spike</button>
+        <button onclick="filterCategory('traps')" id="catBtn_traps" class="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 shadow-sm shrink-0 transition">🎯 Trap &amp; Breakout</button>
+        <button onclick="filterCategory('sectors')" id="catBtn_sectors" class="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 shadow-sm shrink-0 transition">🏭 Sector Sentiment</button>
+        <button onclick="filterCategory('indian')" id="catBtn_indian" class="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 shadow-sm shrink-0 transition">🇮🇳 NSE / BSE</button>
+        <button onclick="filterCategory('crypto')" id="catBtn_crypto" class="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 shadow-sm shrink-0 transition">🪙 All Crypto</button>
+    </div>
+
+
+    <div id="assetsFeedContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+</main>  
+
+<main id="tabContentChart" class="tab-page hidden p-3 space-y-3 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+    <div class="groww-card rounded-2xl p-3 shadow-lg bg-white space-y-2.5">
+        <div class="flex items-center justify-between border-b border-slate-200 pb-2">
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-chart-line text-[#00d09c] text-xs"></i>
+                <span id="tvChartCurrentTitle" class="text-xs font-black text-slate-900 mono-font">NIFTY 50</span>
+                <span id="chartSourceBadge" class="text-[8px] bg-[#00d09c]/15 text-[#059669] px-1.5 py-0.5 rounded font-mono font-bold border border-[#00d09c]/30">IN-APP CHART</span>
+            </div>
+            <span id="chartLiveLtpBadge" class="text-[10px] text-slate-900 font-mono font-black">--</span>
+        </div>
+
+        <div class="flex space-x-1.5">
+            <input type="text" id="inAppChartSearchInput" onkeydown="if(event.key==='Enter') searchAndLoadInAppChart()" placeholder="Search any stock or crypto (e.g. MRF, SOL, BTC)..." class="flex-1 bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-[11px] text-slate-900 focus:outline-none focus:border-[#00d09c]">
+            <button type="button" onclick="searchAndLoadInAppChart()" class="groww-btn-green px-3 py-1.5 rounded-xl text-[10px] font-black shrink-0">Load</button>
+        </div>
+
+        <div class="flex items-center justify-between">
+            <div class="flex space-x-1 font-mono text-[9.5px] font-bold" id="chartTimeframeBar">
+                <button type="button" onclick="changeChartTimeframe('15s')" id="tfBtn_15s" class="px-2 py-1 rounded-lg bg-slate-100 text-slate-600">15s</button>
+                <button type="button" onclick="changeChartTimeframe('1m')" id="tfBtn_1m" class="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600">1m</button>
+                <button type="button" onclick="changeChartTimeframe('5m')" id="tfBtn_5m" class="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600">5m</button>
+                <button type="button" onclick="changeChartTimeframe('15m')" id="tfBtn_15m" class="px-2.5 py-1 rounded-lg bg-[#00d09c] text-white font-black">15m</button>
+                <button type="button" onclick="changeChartTimeframe('1h')" id="tfBtn_1h" class="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600">1h</button>
+                <button type="button" onclick="changeChartTimeframe('1d')" id="tfBtn_1d" class="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600">1D</button>
+            </div>
+            <span id="chartOhlcLegend" class="text-[8.5px] font-mono text-slate-500">EMA 9 / 21 • S1 / R1</span>
+        </div>
+
+        <div id="tvLiveChartFrame" style="height: 410px; width: 100%; border-radius: 12px; overflow: hidden; background: #ffffff; border: 1px solid #e2e8f0;"></div>
+    </div>
+</main>
+
+<main id="tabContentNewsAi" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+    <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
+        <button onclick="switchNewsAiSubTab('ai')" id="subTabBtn_ai" class="flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm">🧠 AI Guardian</button>
+        <button onclick="switchNewsAiSubTab('news')" id="subTabBtn_news" class="flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition">📰 Market News</button>
+    </div>
+
+    <div id="subTabContent_ai" class="space-y-3 flex flex-col h-[72vh]">
+        <div class="groww-card p-2.5 flex items-center justify-between shadow-sm bg-white">  
+            <div class="flex items-center space-x-2">  
+                <div class="w-7 h-7 rounded-lg bg-[#00d09c]/10 border border-[#00d09c]/30 flex items-center justify-center text-[#00d09c] text-xs"><i class="fa-solid fa-brain"></i></div>  
+                <div><h3 class="text-xs font-bold text-slate-900 heading-font">ARAF Market Intelligence AI</h3><p class="text-[9px] text-[#eb5b3c] font-mono font-medium">Share &amp; Crypto Markets Only</p></div>  
+            </div>  
+            <select id="aiChatLangSelect" onchange="setAiChatLanguage(this.value)" class="bg-slate-100 border border-slate-200 text-[#00d09c] text-[9px] font-mono font-bold rounded-lg px-2 py-1 focus:outline-none">
+                <option value="en-US" selected>English</option>
+                <option value="bn-IN">বাংলা</option>
+                <option value="hi-IN">हिन्दी</option>
+            </select>
+        </div>  
+
+        <div id="aiChatBox" class="flex-1 overflow-y-auto space-y-2.5 p-2.5 bg-white rounded-2xl border border-slate-200 text-xs scrollbar-hidden shadow-sm">  
+            <div class="bg-slate-50 border border-slate-200 text-slate-800 p-3 rounded-2xl rounded-tl-none max-w-[90%] space-y-1.5 shadow-sm">  
+                <div class="flex items-center space-x-1.5 text-[#00d09c] font-bold text-[11px]"><i class="fa-solid fa-shield-halved text-[#eb5b3c]"></i> <span>ARAF GUARDIAN BOT</span></div>  
+                <p class="text-slate-700 text-[11px] leading-relaxed font-sans">I am online and ready to guard your capital. Ask any technical analysis, smart money trap, or market setup question across NSE, BSE, or Crypto markets. No FOMO or revenge trading allowed!</p>  
+            </div>  
+        </div>  
+
+        <div class="py-1 flex space-x-1.5 overflow-x-auto scrollbar-hidden text-[10px]">  
+            <button onclick="askAiQuick('Is there any retail trap running on active chart right now?')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-700 whitespace-nowrap active:scale-95 transition shadow-sm font-medium">🚨 Trap Check?</button>  
+            <button onclick="askAiQuick('Show smart money footprint and two-way entry levels for active chart')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-700 whitespace-nowrap active:scale-95 transition shadow-sm font-medium">🦈 Footprint Blueprint?</button>  
+            <button onclick="askAiQuick('What is the golden rule to protect capital from blowout?')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-700 whitespace-nowrap active:scale-95 transition shadow-sm font-medium">🛡️ Capital Rules?</button>  
+        </div>  
+
+        <div class="flex items-center space-x-2 pt-1">  
+            <input type="text" id="aiInput" onkeydown="if(event.key === 'Enter') sendAiMessage()" placeholder="Ask about traps, regime, or levels..." class="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#00d09c] shadow-inner">  
+            <button onclick="sendAiMessage()" id="aiSendBtn" class="w-9 h-9 rounded-xl groww-btn-green flex items-center justify-center font-bold active:scale-95 transition shadow-lg"><i class="fa-solid fa-paper-plane text-xs"></i></button>  
+        </div>  
+    </div>
+
+    <div id="subTabContent_news" class="space-y-3.5 hidden">
+        <div class="groww-card border border-[#00d09c]/30 rounded-2xl p-3.5 shadow-sm space-y-2 bg-white">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <div class="w-7 h-7 rounded-xl bg-[#00d09c]/20 text-[#00d09c] flex items-center justify-center font-bold text-xs border border-[#00d09c]/30"><i class="fa-solid fa-bullseye"></i></div>
+                    <div>
+                        <h3 class="font-black text-slate-900 text-xs flex items-center heading-font"><span id="newsActiveTargetLabel">MARKET FOCUS</span> <span class="text-[8px] bg-[#00d09c]/20 text-[#059669] px-1.5 rounded ml-1.5 font-mono">CATALYST WIRE</span></h3>
+                        <p class="text-[9px] text-slate-500 font-mono">Geopolitics &amp; Market-Moving Catalysts Only</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-between pt-1 border-t border-slate-200">
+                <span class="text-[9px] font-bold text-slate-600 font-mono">NEWS LANGUAGE:</span>
+                <div class="flex space-x-1 text-[8.5px] font-mono font-bold" id="newsLanguagePillsContainer">
+                    <button onclick="setNewsDigestLanguage('en-US')" id="btnNewsLang_en" class="px-2 py-0.5 rounded bg-[#00d09c] text-white font-black">EN</button>
+                    <button onclick="setNewsDigestLanguage('bn-IN')" id="btnNewsLang_bn" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">বাংলা</button>
+                    <button onclick="setNewsDigestLanguage('hi-IN')" id="btnNewsLang_hi" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">हिंदी</button>
+                    <button onclick="setNewsDigestLanguage('gu-IN')" id="btnNewsLang_gu" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">ગુજ</button>
+                    <button onclick="setNewsDigestLanguage('mr-IN')" id="btnNewsLang_mr" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">मराठी</button>
+                    <button onclick="setNewsDigestLanguage('ta-IN')" id="btnNewsLang_ta" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">தமிழ்</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex space-x-1 font-mono text-[9.5px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
+            <button onclick="switchNewsTabCategory('stock_only')" id="newsTab_stock_only" class="flex-1 py-1.5 rounded-xl bg-white text-slate-900 font-black transition shadow-sm">🎯 Stock Catalysts</button>
+            <button onclick="switchNewsTabCategory('geopolitical')" id="newsTab_geopolitical" class="flex-1 py-1.5 rounded-xl text-slate-600 hover:text-slate-900 transition">🌍 Macro / Geopolitics</button>
+        </div>
+
+        <div class="space-y-2">
+            <div class="flex items-center justify-between px-1">
+                <span id="newsFilterCountBadge" class="text-[10px] text-slate-500 font-mono font-bold">Filtering catalyst wire...</span>
+                <button onclick="fetchRealFinancialNews()" class="text-[9px] text-[#00d09c] font-mono hover:underline flex items-center font-bold"><i class="fa-solid fa-rotate mr-1"></i> Refresh Catalyst</button>
+            </div>
+            <div id="newsFeedList" class="space-y-2.5"></div>
+        </div>
+    </div>
+</main>
+
+<main id="tabContentPosition" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+    <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
+        <button onclick="switchPositionBrokerTab('shoonya')" id="posBrokerBtn_shoonya" class="flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm">🏛️ Shoonya Position</button>
+        <button onclick="switchPositionBrokerTab('coindcx')" id="posBrokerBtn_coindcx" class="flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition">🪙 CoinDCX Position</button>
+    </div>
+
+    <div class="groww-card p-4 shadow-sm space-y-3 bg-white">
+        <div class="flex items-center justify-between border-b border-slate-200 pb-2.5">
+            <div><span id="posBrokerTitleLabel" class="text-[9px] text-slate-500 uppercase font-mono font-bold tracking-wider">Shoonya Balance / Limits</span><h2 id="hudShoonyaBalance" class="text-xl font-black text-[#00d09c] mono-font mt-0.5">₹0.00</h2></div>
+            <div class="text-right"><span class="text-[9px] text-slate-500 uppercase font-mono font-bold tracking-wider">Live Day MTM</span><div id="hudLiveMtmVal" class="text-xs font-black mono-font text-[#00d09c] mt-0.5">₹0.00</div></div>
+        </div>
+
+        <div class="flex space-x-1 font-mono text-[9.5px] font-bold bg-slate-100 p-1 rounded-xl border border-slate-200">
+            <button onclick="switchPositionSubTab('open')" id="posSubTab_open" class="flex-1 py-1 rounded-lg bg-white text-slate-900 font-bold shadow-sm">Live Positions</button>
+            <button onclick="switchPositionSubTab('pending')" id="posSubTab_pending" class="flex-1 py-1 rounded-lg text-slate-600 hover:text-slate-900">Pending Orders</button>
+            <button onclick="switchPositionSubTab('history')" id="posSubTab_history" class="flex-1 py-1 rounded-lg text-slate-600 hover:text-slate-900">Order History</button>
+        </div>
+
+        <div id="positionSubContent_open" class="space-y-2">
+            <div class="flex items-center justify-between pb-1">
+                <h4 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-layer-group text-[#00d09c] mr-1.5"></i> Open Positions &amp; Fast Exit</h4>
+                <span class="text-[8px] bg-[#00d09c]/10 text-[#059669] font-mono font-bold px-1.5 py-0.5 rounded border border-[#00d09c]/30">PROTECTED EXIT</span>
+            </div>
+            <div id="openPositionsList" class="space-y-1.5">
+                <p class="text-[9px] text-slate-500 font-mono text-center py-2">No active open positions.</p>
+            </div>
+        </div>
+
+        <div id="positionSubContent_pending" class="space-y-2 hidden">
+            <div class="flex items-center justify-between pb-1">
+                <h4 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-clock text-amber-600 mr-1.5"></i> Pending Limit / SL Orders</h4>
+            </div>
+            <div id="pendingOrdersList" class="space-y-1.5">
+                <p class="text-[9px] text-slate-500 font-mono text-center py-2">No pending orders.</p>
+            </div>
+        </div>
+
+        <div id="positionSubContent_history" class="space-y-2 hidden">
+            <div class="flex items-center justify-between pb-1">
+                <h4 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-clock-rotate-left text-blue-600 mr-1.5"></i> Executed &amp; Closed History</h4>
+            </div>
+            <div id="recentTradesList" class="space-y-1.5">
+                <p class="text-[9px] text-slate-500 font-mono text-center py-2">No executions recorded.</p>
+            </div>
+        </div>
+
+        <div id="positionRiskGuardBlock" class="bg-slate-50 border border-slate-200 rounded-xl p-2.5 space-y-2 text-[9.5px] mono-font pt-2 border-t">
+            <div class="flex items-center justify-between">
+                <span class="text-slate-600 font-bold">CAPITAL &amp; DAILY RISK GUARD</span>
+                <span id="riskLimitDisplayBadge" class="text-amber-600 font-black">Limit: -₹2,500</span>
+            </div>
+            <div class="grid grid-cols-3 gap-1.5">
+                <div>
+                    <label class="text-[8px] text-slate-500 block">Capital (₹)</label>
+                    <input type="number" id="riskCapitalInput" min="5000" value="100000" oninput="calculateSafeQtySuggestion()" class="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-900 font-bold">
+                </div>
+                <div>
+                    <label class="text-[8px] text-slate-500 block">Daily Loss %</label>
+                    <select id="riskLossPctSelect" class="w-full bg-white border border-slate-200 rounded-lg px-1.5 py-1 text-slate-900 font-bold">
+                        <option value="1">1%</option>
+                        <option value="2">2%</option>
+                        <option value="2.5" selected>2.5%</option>
+                        <option value="3">3%</option>
+                        <option value="5">5%</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-[8px] text-slate-500 block">Max Trades</label>
+                    <select id="riskMaxTradesSelect" class="w-full bg-white border border-slate-200 rounded-lg px-1.5 py-1 text-slate-900 font-bold">
+                        <option value="3" selected>3</option>
+                        <option value="5">5</option>
+                        <option value="10">10</option>
+                    </select>
+                </div>
+            </div>
+            <div class="flex space-x-1.5">
+                <button type="button" onclick="syncBrokerCapitalToRiskInput()" class="flex-1 bg-slate-200 text-slate-700 py-1 rounded-lg text-[9px] font-bold border border-slate-300">Use Broker Bal</button>
+                <button type="button" onclick="saveUserRiskConfig()" class="flex-1 groww-btn-green py-1 rounded-lg text-[9px] font-black">Lock Day Risk</button>
+            </div>
+        </div>
+        <button onclick="resetDailyKillSwitchManual()" class="w-full bg-slate-200 hover:bg-slate-300 border border-slate-300 text-slate-800 font-bold py-1.5 rounded-xl text-[10px] transition active:scale-95 flex items-center justify-center space-x-1"><i class="fa-solid fa-arrows-rotate text-[#00d09c] mr-1"></i> <span>Sync Positions &amp; Verify Server Risk Guard</span></button>
+    </div>
+
+    <div id="twoWayExecutionDeskCard" class="groww-card p-3.5 shadow-sm space-y-3 bg-white">
+        <div class="flex items-center justify-between"><h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-bolt-lightning text-amber-600 mr-2"></i> Two-Way Execution Desk</h3><span id="orderRoutingBadge" class="text-[9px] bg-[#00d09c]/10 text-[#059669] font-mono font-bold px-2 py-0.5 rounded border border-[#00d09c]/30">LIVE BROKER</span></div>
+        <div class="grid grid-cols-2 gap-2">
+            <div>
+                <label class="text-[9px] font-bold text-slate-600 block mb-1">Asset Symbol</label>
+                <select id="tradeOrderSymbol" onchange="handleOrderSymbolChange()" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-2.5 py-2 font-bold text-slate-900 text-xs focus:outline-none">
+                    <option value="NIFTY" selected>NIFTY 50 Fut (NFO)</option>
+                    <option value="BANKNIFTY">BANK NIFTY Fut (NFO)</option>
+                    <option value="SENSEX">SENSEX Fut (BFO)</option>
+                    <option value="BANKEX">BSE BANKEX Fut (BFO)</option>
+                    <option value="RELIANCE">RELIANCE Eq (NSE)</option>
+                    <option value="HDFCBANK">HDFC BANK Eq (NSE)</option>
+                    <option value="TATAMOTORS">TATA MOTORS Eq (NSE)</option>
+                    <option value="TCS">TCS Eq (BSE)</option>
+                    <option value="INFY">INFOSYS Eq (BSE)</option>
+                    <option value="BTCUSDT">BTC/USDT Perp (CoinDCX)</option>
+                    <option value="ETHUSDT">ETH/USDT Perp (CoinDCX)</option>
+                    <option value="PAXGUSDT">PAXG/USDT Tokenized Gold (CoinDCX)</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-[9px] font-bold text-slate-600 block mb-1">Quantity / Lot</label>
+                <input type="number" step="any" id="tradeOrderQty" oninput="updateCryptoMarginCalculation()" value="65" min="0.0001" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 mono-font focus:outline-none">
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 items-end">
+            <div>
+                <label class="text-[9px] font-bold text-slate-600 block mb-1">System Auto SL (ATR / S1-R1)</label>
+                <input type="number" step="any" id="tradeSlPriceInput" readonly placeholder="System Auto SL" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-[#eb5b3c] mono-font focus:outline-none cursor-not-allowed">
+            </div>
+            <div class="bg-slate-100 border border-slate-200 rounded-xl px-2.5 py-2 text-[9px] mono-font">
+                <span class="text-slate-500 block text-[8px]">Risk Intelligence (1% Cap):</span>
+                <b id="riskSafeQtyHint" class="text-[#00d09c]">Safe Qty: --</b>
+            </div>
+        </div>
+
+        <div id="cryptoLeverageControlBox" class="hidden space-y-2.5 pt-2 border-t border-slate-200">
+            <div>
+                <div class="flex items-center justify-between mb-1"><label class="text-[9px] font-bold text-slate-600">Select Leverage (Safe Cap 10x)</label><span id="activeLeverageDisplay" class="text-[9px] font-black text-[#059669] bg-[#00d09c]/15 px-2 py-0.5 rounded border border-[#00d09c]/30">1X LEVERAGE (SAFE)</span></div>
+                <div class="grid grid-cols-5 gap-1 font-mono text-[10px] font-bold" id="cryptoLeveragePillGroup">
+                    <button type="button" onclick="setCryptoLeverage(1)" id="btnLev_1" class="py-1.5 rounded-lg bg-[#00d09c] text-white font-black shadow-sm active:scale-95 transition">1x</button>
+                    <button type="button" onclick="setCryptoLeverage(2)" id="btnLev_2" class="py-1.5 rounded-lg bg-slate-100 text-slate-600 border border-slate-200 active:scale-95 transition">2x</button>
+                    <button type="button" onclick="setCryptoLeverage(3)" id="btnLev_3" class="py-1.5 rounded-lg bg-slate-100 text-slate-600 border border-slate-200 active:scale-95 transition">3x</button>
+                    <button type="button" onclick="setCryptoLeverage(5)" id="btnLev_5" class="py-1.5 rounded-lg bg-slate-100 text-slate-600 border border-slate-200 active:scale-95 transition">5x</button>
+                    <button type="button" onclick="setCryptoLeverage(10)" id="btnLev_10" class="py-1.5 rounded-lg bg-slate-100 text-slate-600 border border-slate-200 active:scale-95 transition">10x</button>
+                </div>
+                <div class="flex items-center space-x-2 mt-2 pt-1 border-t border-slate-200"><span class="text-[9px] font-bold text-slate-600 font-mono">Custom Leverage:</span><input type="number" id="customLeverageInput" min="1" max="10" value="1" oninput="setCryptoLeverage(parseInt(this.value) || 1)" class="w-16 bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 text-center font-bold text-amber-600 text-xs focus:outline-none"><span class="text-xs text-slate-600 font-bold font-mono">X (Server Cap 10x)</span></div>
+            </div>
+            <div class="bg-slate-100 border border-slate-200 rounded-xl p-2.5 space-y-1.5 mono-font text-[9.5px]">
+                <div class="flex items-center justify-between text-slate-600"><span>Position Value:</span><b id="calcPositionValue" class="text-slate-900 font-bold">--</b></div>
+                <div class="flex items-center justify-between text-[#00d09c]"><span>Required Margin:</span><b id="calcRequiredMargin" class="text-[#00d09c] text-[11px] font-black">--</b></div>
+                <div class="flex items-center justify-between text-slate-500 text-[8.5px] pt-1.5 border-t border-slate-200"><span>Indicative Liq (Long): <b id="calcEstLiqPrice" class="text-[#eb5b3c] font-black">--</b></span><span id="calcMarginSufficiency" class="text-slate-600 font-bold">Checking...</span></div>
+            </div>
+        </div>
+
+        <div id="orderStatusMsg" class="hidden p-2 rounded-xl text-[10px] mono-font font-bold"></div>
+        <div class="grid grid-cols-2 gap-2 pt-1">
+            <button onclick="dispatchManualDeskOrder('BUY')" id="btnLiveBuy" class="py-2.5 rounded-xl groww-btn-green text-xs shadow-lg active:scale-95 transition flex items-center justify-center space-x-1 font-bold"><i class="fa-solid fa-arrow-trend-up mr-1"></i> <span>BUY / LONG</span></button>
+            <button onclick="dispatchManualDeskOrder('SELL')" id="btnLiveSell" class="py-2.5 rounded-xl groww-btn-red text-xs shadow-lg active:scale-95 transition flex items-center justify-center space-x-1"><i class="fa-solid fa-arrow-trend-down mr-1"></i> <span>SELL / SHORT</span></button>
+        </div>
+    </div>
+
+    <div id="coindcxDepositWalletCard" class="hidden groww-card p-4 shadow-sm space-y-3 bg-white">
+        <div class="flex items-center justify-between border-b border-slate-200 pb-2">
+            <h3 class="text-xs font-black text-slate-900 flex items-center heading-font">
+                <i class="fa-solid fa-wallet text-[#00d09c] mr-2"></i> CoinDCX Wallet Balance
+            </h3>
+            <span id="coindcxWalletStatusBadge" class="text-[8.5px] bg-[#00d09c]/15 text-[#059669] font-mono font-bold px-2 py-0.5 rounded border border-[#00d09c]/30">LIVE DEPOSIT</span>
+        </div>
+        <div class="grid grid-cols-2 gap-2.5 mono-font">
+            <div class="bg-slate-50 border border-slate-200 rounded-2xl p-3">
+                <span class="text-[9px] text-slate-500 uppercase font-bold block">Deposit INR Balance</span>
+                <b id="hudCoinDcxInrVal" class="text-lg font-black text-[#00d09c] mt-1 block">₹0.00</b>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-2xl p-3 text-right">
+                <span class="text-[9px] text-slate-500 uppercase font-bold block">Available USDT</span>
+                <b id="hudCoinDcxUsdtVal" class="text-lg font-black text-slate-900 mt-1 block">0.00 USDT</b>
+            </div>
+        </div>
+    </div>
+</main>
+
+<main id="tabContentTrade" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs"></main>
+
+<main id="tabContentHoldings" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+    <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
+        <button onclick="switchHoldingsBrokerTab('shoonya')" id="holdingsBrokerBtn_shoonya" class="flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm">🏛️ Shoonya Holdings</button>
+        <button onclick="switchHoldingsBrokerTab('coindcx')" id="holdingsBrokerBtn_coindcx" class="flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition">🪙 CoinDCX Holdings</button>
+    </div>
+
+    <div class="groww-card p-4 shadow-sm space-y-3 bg-white">
+        <div class="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2.5 shadow-sm">
+            <div class="flex items-center justify-between">
+                <span class="text-[9px] text-slate-500 uppercase font-mono font-bold tracking-wider">Total Holdings Value</span>
+                <div class="flex items-center space-x-2">
+                    <button onclick="toggleHoldingsValuesVisibility()" class="text-slate-400 hover:text-slate-900"><i id="holdingEyeIcon" class="fa-solid fa-eye text-xs"></i></button>
+                    <i class="fa-solid fa-chart-pie text-[#00d09c]"></i>
+                </div>
+            </div>
+            <h2 id="holdingsTotalVal" class="text-2xl font-black text-slate-900 mono-font">₹0.00</h2>
+            <div class="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200 mono-font text-[9.5px]">
+                <div><span class="text-slate-500 block text-[8px]">1D Returns</span><b id="holdings1dRet" class="text-[#00d09c]">₹0.00 (0.00%)</b></div>
+                <div><span class="text-slate-500 block text-[8px]">Total Returns</span><b id="holdingsTotalRet" class="text-[#00d09c]">₹0.00 (0.00%)</b></div>
+                <div class="text-right"><span class="text-slate-500 block text-[8px]">Invested</span><b id="holdingsInvestedVal" class="text-slate-900">₹0.00</b></div>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between pt-1">
+            <h4 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-boxes-stacked text-[#00d09c] mr-1.5"></i> <span id="holdingsListTitle">Shoonya Delivery Assets</span></h4>
+            <span class="text-[8px] bg-slate-100 text-slate-600 font-mono font-bold px-2 py-0.5 rounded border border-slate-200">CNC / SPOT</span>
+        </div>
+
+        <div id="holdingsItemsList" class="space-y-2">
+            <p class="text-[9px] text-slate-500 font-mono text-center py-4">No holdings found.</p>
+        </div>
+    </div>
+</main>
+
+<main id="tabContentIpo" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+    <div class="groww-card p-3.5 shadow-sm space-y-2 bg-white">
+        <div class="flex items-center justify-between">
+            <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-robot text-[#00d09c] mr-2"></i> Auto Trade &amp; IPO</h3>
+            <span id="autoTradeTopPill" class="text-[8px] bg-slate-100 text-slate-600 font-mono px-2 py-0.5 rounded font-bold border border-slate-200">AUTO: OFF</span>
+        </div>
+        <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
+            <button type="button" onclick="switchIpoAutoSubTab('ipo')" id="subTabBtn_ipo" class="flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm">🚀 IPO &amp; GMP</button>
+            <button type="button" onclick="switchIpoAutoSubTab('autotrade')" id="subTabBtn_autotrade" class="flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition">🤖 Auto Trade</button>
+        </div>
+    </div>
+
+    <!-- Sub-Tab 1: IPO Intelligence, GMP History & Multilingual IPO News -->
+    <div id="subTabContent_ipo" class="space-y-3">
+        <div class="flex space-x-1.5 font-mono text-[10px] font-bold">
+            <button onclick="filterIpoType('all')" id="ipoFilter_all" class="px-3 py-1 rounded-xl bg-[#00d09c] text-white font-black shadow-md">All IPOs</button>
+            <button onclick="filterIpoType('mainboard')" id="ipoFilter_mainboard" class="px-3 py-1 rounded-xl bg-white border border-slate-200 text-slate-600">Mainboard</button>
+            <button onclick="filterIpoType('sme')" id="ipoFilter_sme" class="px-3 py-1 rounded-xl bg-white border border-slate-200 text-slate-600">SME</button>
+        </div>
+        <div id="ipoFeedContainer" class="space-y-2.5"></div>
+
+        <div class="groww-card p-3.5 space-y-2.5 bg-white">
+            <div class="flex items-center justify-between border-b border-slate-200 pb-2">
+                <h4 class="text-xs font-black text-slate-900 heading-font"><i class="fa-solid fa-newspaper text-[#00d09c] mr-1.5"></i> IPO News &amp; SEBI/NSE Filings</h4>
+                <button type="button" onclick="fetchRealIpoNews()" class="text-[9px] text-[#00d09c] font-mono font-bold hover:underline"><i class="fa-solid fa-rotate mr-1"></i> Refresh</button>
+            </div>
+            <div class="flex space-x-1 text-[8.5px] font-mono font-bold overflow-x-auto scrollbar-hidden" id="ipoNewsLangBar">
+                <button type="button" onclick="setIpoNewsLang('bn')" id="btnIpoNewsLang_bn" class="px-2 py-0.5 rounded bg-[#00d09c] text-white font-black">বাংলা</button>
+                <button type="button" onclick="setIpoNewsLang('en')" id="btnIpoNewsLang_en" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">EN</button>
+                <button type="button" onclick="setIpoNewsLang('hi')" id="btnIpoNewsLang_hi" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">हिंदी</button>
+                <button type="button" onclick="setIpoNewsLang('gu')" id="btnIpoNewsLang_gu" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">ગુજ</button>
+                <button type="button" onclick="setIpoNewsLang('mr')" id="btnIpoNewsLang_mr" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">मराठी</button>
+                <button type="button" onclick="setIpoNewsLang('ta')" id="btnIpoNewsLang_ta" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600">தமிழ்</button>
+            </div>
+            <div id="ipoNewsFeedContainer" class="space-y-2">
+                <p class="text-[9.5px] text-slate-500 font-mono text-center py-2">Loading IPO catalyst news...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sub-Tab 2: Auto Trade (3 Options: ON/OFF, Daily Balance Limit, 90%+ & 100% Engine Gate) -->
+    <div id="subTabContent_autotrade" class="hidden space-y-3">
+        <!-- Option 1: ON / OFF Switch -->
+        <div class="groww-card p-3.5 space-y-2.5 bg-white">
+            <div class="flex items-center justify-between">
+                <div>
+                    <span class="text-[8.5px] bg-[#00d09c]/15 text-[#059669] px-1.5 py-0.2 rounded font-mono font-bold">OPTION 1 • MASTER SWITCH</span>
+                    <h4 class="text-xs font-black text-slate-900 mt-0.5 heading-font">Auto Trading ON / OFF</h4>
+                    <p class="text-[9.5px] text-slate-500">OFF থাকলে নতুন Auto ENTRY হবে না; খোলা পজিশনের SL/TP চলবে।</p>
+                </div>
+                <span id="autoTradeSwitchStatusBadge" class="px-2.5 py-1 rounded-lg bg-[#eb5b3c]/15 text-[#eb5b3c] font-mono font-black text-[10px]">OFF</span>
+            </div>
+            <div class="grid grid-cols-2 gap-2 font-mono text-[10px] font-black">
+                <button type="button" onclick="toggleAutoTradeSwitch(true)" id="btnAutoTradeOn" class="py-2.5 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95">ON</button>
+                <button type="button" onclick="toggleAutoTradeSwitch(false)" id="btnAutoTradeOff" class="py-2.5 rounded-xl bg-[#eb5b3c] text-white shadow-md transition active:scale-95">OFF</button>
+            </div>
+        </div>
+
+        <div class="groww-card p-3.5 space-y-2.5 bg-white">
+            <div class="flex items-center justify-between border-b border-slate-200 pb-1.5">
+                <div>
+                    <h4 class="text-xs font-black text-slate-900 mt-0.5 heading-font">Daily Auto Trade Balance Limit (₹)</h4>
+                </div>
+                <span id="autoTradeRemainingBadge" class="text-[9.5px] font-mono font-black text-[#00d09c]">Left: ₹10,000</span>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+                <div>
+                    <label class="text-[9px] font-bold text-slate-600 block mb-1">Daily Limit Amount (₹)</label>
+                    <input type="number" id="autoTradeDailyBudgetInput" min="1000" max="10000000" value="10000" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs font-black text-slate-900 mono-font focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <div>
+                    <label class="text-[9px] font-bold text-slate-600 block mb-1">Allowed Markets</label>
+                    <select id="autoTradeMarketScope" class="w-full bg-slate-100 border border-slate-200 rounded-xl px-2 py-2 text-[11px] font-bold text-slate-900 focus:outline-none">
+                        <option value="ALL" selected>Indian + Crypto</option>
+                        <option value="INDIAN">Indian (Shoonya) Only</option>
+                        <option value="CRYPTO">Crypto (CoinDCX) Only</option>
+                    </select>
+                </div>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-2 grid grid-cols-3 gap-1 text-center font-mono text-[9px]">
+                <div><span class="text-slate-500 text-[7.5px] block">Daily Limit</span><b id="atStatLimit" class="text-slate-900">₹10,000</b></div>
+                <div><span class="text-slate-500 text-[7.5px] block">Used Today</span><b id="atStatUsed" class="text-amber-600">₹0</b></div>
+                <div><span class="text-slate-500 text-[7.5px] block">Active Pos</span><b id="atStatPos" class="text-[#00d09c]">0</b></div>
+            </div>
+            <button type="button" onclick="saveAutoTradeBudgetConfig()" class="w-full groww-btn-green py-2.5 rounded-xl text-xs font-black active:scale-95 transition">
+                Save &amp; Lock Daily Auto Limit
+            </button>
+        </div>
+
+    </div>
+</main>
+
+<main id="tabContentSettings" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">  
+    <div class="groww-card p-4 space-y-3.5 shadow-sm bg-white">  
+        <div class="flex items-center justify-between border-b border-slate-200 pb-2">
+            <h3 class="text-xs font-black text-slate-900 flex items-center tracking-wide uppercase heading-font"><i class="fa-solid fa-sliders text-[#00d09c] mr-2"></i> Settings &amp; Encrypted Vault</h3>  
+            <span class="text-[8px] bg-[#00d09c]/20 text-[#059669] px-2 py-0.5 rounded-full font-mono font-bold">ZERO-SECRET CLIENT</span>
+        </div>
+
+        <div class="bg-gradient-to-br from-slate-50 to-slate-100 border border-[#00d09c]/30 rounded-2xl p-3.5 space-y-2 shadow-inner">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <div class="w-8 h-8 rounded-xl bg-[#00d09c]/20 text-[#00d09c] border border-[#00d09c]/40 flex items-center justify-center text-sm font-bold">
+                        <i class="fa-solid fa-id-card-clip"></i>
+                    </div>
+                    <div>
+                        <h4 id="settingsProfileName" class="text-xs font-black text-slate-900 heading-font">ARAF TRADER</h4>
+                        <span id="settingsKycBadge" class="text-[8px] bg-[#00d09c]/15 text-[#059669] px-1.5 py-0.2 rounded font-mono font-bold border border-[#00d09c]/30">KYC: PENDING</span>
+                    </div>
+                </div>
+                <span class="text-[8.5px] gold-badge px-2 py-0.5 rounded-full font-mono font-bold">PRO DESK</span>
+            </div>
+            
+            <div class="bg-white border border-slate-200 rounded-xl p-2.5 flex items-center justify-between font-mono">
+                <div>
+                    <span class="text-[8px] text-slate-500 uppercase block">Permanent Trader UID:</span>
+                    <b id="settingsProfileUid" class="text-xs font-black text-[#00d09c] tracking-wider">PENDING</b>
+                </div>
+                <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('settingsProfileUid').textContent); alert('Trader UID Copied to Clipboard!');" class="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-[9px] border border-slate-300 active:scale-95 transition flex items-center space-x-1">
+                    <i class="fa-solid fa-copy text-[#00d09c]"></i> <span>Copy</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 p-3.5 rounded-xl space-y-2.5">
+            <div class="flex items-center justify-between">
+                <div>
+                    <span class="font-bold text-slate-900 text-[11px] block">🔐 Biometric Fingerprint Security</span>
+                    <span class="text-[8.5px] text-slate-500 font-mono">Quick unlock via device sensor</span>
+                </div>
+                <button onclick="toggleBiometricSetting()" id="btnBiometricToggle" class="px-3 py-1.5 rounded-xl bg-slate-200 text-slate-800 font-black text-[10px] transition active:scale-95">ENABLE</button>
+            </div>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 p-3.5 rounded-xl space-y-2.5">
+            <div class="flex items-center justify-between">
+                <div>
+                    <span class="font-bold text-slate-900 text-[11px] block">🔗 Local PC Static IP Relay URL</span>
+                    <span class="text-[8.5px] text-slate-500 font-mono">Daily Cloudflare Tunnel Link (Both Brokers)</span>
+                </div>
+                <div class="flex items-center space-x-1.5">
+                    <span id="relayLiveDot" class="status-dot-red-1s shrink-0"></span>
+                    <b id="relayLiveText" class="text-[8px] text-[#eb5b3c] font-mono">LIVE</b>
+                    <span id="relayUrlStatusBadge" class="text-[8px] bg-slate-200 text-slate-600 px-1.5 py-0.2 rounded font-mono font-bold border border-slate-300">UNSET</span>
+                </div>
+            </div>
+            <input type="text" id="settingCustomRelayUrl" placeholder="https://xxxx.trycloudflare.com" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-[#00d09c] font-mono focus:outline-none">
+            <input type="password" id="settingCustomRelaySecret" placeholder="PC BROKER_RELAY_SECRET (Min 16 chars)" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-mono focus:outline-none">
+            <div class="flex space-x-2">
+                <button onclick="saveCustomRelayUrlToCloud()" class="flex-1 groww-btn-green py-2 rounded-lg text-[10.5px] transition active:scale-95 shadow-md font-black">
+                    Save Relay &amp; Secret
+                </button>
+                <button onclick="clearCustomRelayUrlFromCloud()" class="px-3 bg-slate-200 text-slate-700 font-bold py-2 rounded-lg text-[10px] border border-slate-300 active:scale-95 transition">
+                    Clear
+                </button>
+            </div>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 p-3.5 rounded-xl space-y-2">
+            <div class="flex items-center justify-between">
+                <span class="font-bold text-slate-900 text-[11px] block">Shoonya 1-Click Auto Connect</span>
+                <div class="flex items-center space-x-1.5">
+                    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#6366f1"/><path d="M7 15.5c2.7-5.2 7.3-5.2 10-1.5-2.2 2.8-7.8 4-10 1.5Z" fill="white"/><circle cx="12" cy="11" r="2" fill="#6366f1"/></svg>
+                    <span id="shoonyaLiveDot" class="status-dot-red-1s shrink-0"></span>
+                    <b id="shoonyaLiveText" class="text-[8px] text-[#eb5b3c] font-mono">LIVE</b>
+                    <span id="shoonyaVaultStatusBadge" class="text-[8px] bg-slate-200 text-slate-600 px-1.5 py-0.2 rounded font-mono font-bold border border-slate-300">UNLINKED</span>
+                    <button onclick="unlinkBrokerVault('SHOONYA')" id="btnShoonyaUnlink" class="hidden px-2 py-0.5 rounded bg-[#eb5b3c] text-white font-bold text-[8px]">Unlink</button>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+                <input type="text" id="settingShoonyaUid" placeholder="Shoonya User ID" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none uppercase">
+                <input type="text" id="settingShoonyaVendor" placeholder="Vendor Code (Optional)" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none uppercase">
+            </div>
+            <input type="password" id="settingShoonyaPassword" placeholder="Shoonya Password" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none">
+            <div class="grid grid-cols-2 gap-2">
+                <input type="text" id="settingShoonyaTotp" placeholder="6-Digit TOTP / PAN" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none">
+                <input type="password" id="settingShoonyaApiKey" placeholder="Shoonya API Key" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none">
+            </div>
+            <button onclick="autoConnectShoonyaBroker()" id="btnShoonyaAutoConnect" class="w-full groww-btn-green py-2.5 rounded-lg text-[10.5px] transition active:scale-95 shadow-md font-black">
+                <i class="fa-solid fa-bolt mr-1"></i> Auto-Generate Token &amp; Connect Shoonya
+            </button>
+            <details class="pt-1">
+                <summary class="text-[9px] text-slate-500 font-mono cursor-pointer hover:text-[#00d09c]">Or Paste Manual susertoken</summary>
+                <div class="space-y-1.5 pt-2">
+                    <input type="password" id="settingShoonyaToken" placeholder="Paste Daily susertoken manually" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none">
+                    <button onclick="saveShoonyaVaultToRamAndCloud()" class="w-full bg-slate-200 text-slate-800 font-bold py-1.5 rounded-lg text-[9.5px] border border-slate-300">Save Manual Token</button>
+                </div>
+            </details>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 p-3.5 rounded-xl space-y-2">
+            <div class="flex items-center justify-between">
+                <span class="font-bold text-slate-900 text-[11px] block">CoinDCX Encrypted Vault</span>
+                <div class="flex items-center space-x-1.5">
+                    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#2563eb"/><path d="m8 8 4 4-4 4m8-8-4 4 4 4" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span id="coindcxLiveDot" class="status-dot-red-1s shrink-0"></span>
+                    <b id="coindcxLiveText" class="text-[8px] text-[#eb5b3c] font-mono">LIVE</b>
+                    <span id="coindcxVaultStatusBadge" class="text-[8px] bg-slate-200 text-slate-600 px-1.5 py-0.2 rounded font-mono font-bold border border-slate-300">UNLINKED</span>
+                    <button onclick="unlinkBrokerVault('COINDCX')" id="btnCoindcxUnlink" class="hidden px-2 py-0.5 rounded bg-[#eb5b3c] text-white font-bold text-[8px]">Unlink</button>
+                </div>
+            </div>
+            <input type="text" id="settingCoinDcxKey" placeholder="CoinDCX API Key" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none">
+            <input type="password" id="settingCoinDcxSecret" placeholder="CoinDCX API Secret (Encrypted Server-Side)" class="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none">
+            <button onclick="saveCoinDcxVaultToRamAndCloud()" class="w-full bg-slate-200 hover:bg-slate-300 border border-slate-300 text-slate-900 font-bold py-2 rounded-lg text-[10px] transition active:scale-95 shadow-md">Encrypt &amp; Save CoinDCX to Server</button>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 p-3.5 rounded-xl space-y-2.5">
+            <div>
+                <span class="font-bold text-slate-900 text-[11px] block">Read-Only FastAPI Feed Test</span>
+                <span class="text-[8.5px] text-slate-500 font-mono">Uses server-side broker credentials; this test cannot place orders.</span>
+            </div>
+            <div class="grid grid-cols-3 gap-2">
+                <select id="apiShoonyaExchange" class="bg-white border border-slate-200 rounded-lg p-2 text-[10px] text-slate-900">
+                    <option value="NSE">NSE</option>
+                    <option value="BSE">BSE</option>
+                    <option value="NFO">NFO</option>
+                    <option value="BFO">BFO</option>
+                </select>
+                <input id="apiShoonyaToken" type="text" maxlength="40" placeholder="Shoonya token" class="col-span-2 bg-white border border-slate-200 rounded-lg p-2 text-[10px] text-slate-900">
+            </div>
+            <button type="button" onclick="testFastApiQuote('SHOONYA')" class="w-full bg-slate-200 text-slate-800 font-bold py-2 rounded-lg text-[10px] border border-slate-300">Test Shoonya Quote</button>
+            <div class="grid grid-cols-3 gap-2">
+                <span class="self-center text-[9px] text-slate-600">CoinDCX futures pair</span>
+                <input id="apiCoinDcxPair" type="text" maxlength="32" value="BTCUSDT" placeholder="BTCUSDT" class="col-span-2 bg-white border border-slate-200 rounded-lg p-2 text-[10px] text-slate-900">
+            </div>
+            <button type="button" onclick="testFastApiQuote('COINDCX')" class="w-full bg-slate-200 text-slate-800 font-bold py-2 rounded-lg text-[10px] border border-slate-300">Test CoinDCX Quote</button>
+            <pre id="apiFeedTestResult" class="hidden max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-900 p-2 text-[9px] text-emerald-300"></pre>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 p-4 rounded-2xl space-y-3 shadow-sm">
+            <div class="flex items-center justify-between border-b border-slate-200 pb-2.5">
+                <div class="flex items-center space-x-2.5"><div class="w-8 h-8 rounded-xl bg-[#00d09c]/10 text-[#00d09c] flex items-center justify-center text-xs font-bold border border-[#00d09c]/30"><i class="fa-solid fa-building-shield"></i></div><div><span class="text-[8.5px] bg-[#00d09c] text-white font-mono font-black px-1.5 py-0.2 rounded uppercase">ENTERPRISE</span><h4 class="text-xs font-black text-slate-900 leading-tight mt-0.5 heading-font">ARAF DIGITAL CENTER</h4></div></div>
+                <span class="text-[9px] text-slate-500 font-mono font-bold">HQ India</span>
+            </div>
+            <div class="flex items-center space-x-3 bg-white p-2.5 rounded-xl border border-slate-200">
+                <img src="https://i.ibb.co/WvKJbzb0/file-000000004c2082079db37621e6f181e3.png" alt="Chhabibar Mondal" class="w-12 h-12 rounded-xl object-cover object-top border border-[#00d09c]/40 shadow-sm shrink-0">
+                <div><span class="text-[8.5px] text-[#00d09c] font-mono font-bold uppercase block">Founder &amp; CEO</span><h5 class="text-xs font-black text-slate-900 leading-tight heading-font">Chhabibar Mondal</h5><p class="text-[9.5px] text-slate-500 font-sans">Architect • ARAF INTELLIGENCE</p></div>
+            </div>
+            <div class="space-y-2 text-[10px] font-mono">
+                <div class="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200"><span class="text-slate-600 flex items-center font-sans"><i class="fa-solid fa-phone text-[#00d09c] mr-2 text-xs"></i> Mobile</span><div class="flex items-center space-x-2"><a href="tel:+919563075311" class="font-bold text-slate-900 hover:text-[#00d09c] transition">+91 9563075311</a><a href="https://wa.me/919563075311?text=Hello%20ARAF%20Support" target="_blank" class="w-5 h-5 bg-[#25D366] text-white rounded-md flex items-center justify-center text-[10px] shadow-sm active:scale-95 transition"><i class="fa-brands fa-whatsapp"></i></a></div></div>
+                <div class="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200"><span class="text-slate-600 flex items-center font-sans"><i class="fa-solid fa-envelope text-blue-600 mr-2 text-xs"></i> Email</span><a href="mailto:Arafdigitalcenter@gmail.com" class="font-bold text-slate-900 hover:text-blue-600 transition truncate max-w-[190px]">Arafdigitalcenter@gmail.com</a></div>
+                <div class="bg-white p-2.5 rounded-xl border border-slate-200 space-y-1"><span class="text-slate-600 flex items-center font-sans text-[9px] font-bold uppercase"><i class="fa-solid fa-location-dot text-[#eb5b3c] mr-1.5 text-xs"></i> Registered Office Address</span><p class="text-[10px] text-slate-700 font-sans leading-relaxed pl-4">Vill + PO: Atghara, PS: Baduria,<br>District: North 24 Parganas, State: West Bengal,<br><b class="text-[#00d09c] font-mono">PIN: 743438</b>, India</p></div>
+            </div>
+        </div>
+
+        <div id="settingsRiskGuardCard" class="hidden"></div>
+        <button onclick="handleSessionWipeLogout()" class="w-full bg-[#eb5b3c]/10 border border-[#eb5b3c]/30 text-[#eb5b3c] font-bold py-2.5 rounded-xl text-xs active:scale-95 transition"><i class="fa-solid fa-arrow-right-from-bracket mr-1"></i> Logout</button>
+    </div>  
+</main>  
+
+<nav class="fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-2xl border-t border-slate-200 py-2 shadow-2xl">  
+    <div class="max-w-md md:max-w-6xl lg:max-w-7xl mx-auto grid grid-cols-6 text-center">  
+        <button onclick="switchTab('Home')" id="navBtnHome" class="flex flex-col items-center justify-center text-[#00d09c] font-bold"><i class="fa-solid fa-chart-line text-sm"></i><span class="text-[7.5px] font-black mt-1">Home</span></button>  
+        <button onclick="switchTab('Trade')" id="navBtnTrade" class="flex flex-col items-center justify-center text-slate-400 hover:text-slate-900"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="text-[7.5px] font-bold mt-1">Trade</span></button>  
+        <button onclick="switchTab('NewsAi')" id="navBtnNewsAi" class="flex flex-col items-center justify-center text-slate-400 hover:text-slate-900"><i class="fa-solid fa-globe text-sm"></i><span class="text-[7.5px] font-bold mt-1">News &amp; AI</span></button>  
+        <button onclick="switchTab('ShoonyaPos')" id="navBtnShoonyaPos" class="flex flex-col items-center justify-center text-slate-400 hover:text-slate-900"><i class="fa-solid fa-wallet text-sm"></i><span class="text-[7.5px] font-bold mt-1">Positions</span></button>  
+        <button onclick="switchTab('Holdings')" id="navBtnHoldings" class="flex flex-col items-center justify-center text-slate-400 hover:text-slate-900"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M9 7V5h6v2M3 12h18M10 12v2h4v-2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="text-[7.5px] font-bold mt-1">Holdings</span></button>  
+        <button onclick="switchTab('Ipo')" id="navBtnIpo" class="flex flex-col items-center justify-center text-slate-400 hover:text-slate-900"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 22c-1.5-4-1.5-7.5 0-11l5-3c-1 4-1.5 7-1 10-1.5 2-2.8 3.3-4 4Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 11 8 8l1-5 4 7M16 18l3 1-1-4M8 14l-4 2 4 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="13.5" cy="12" r="1.2" fill="currentColor"/></svg><span class="text-[7.5px] font-bold mt-1">Auto &amp; IPO</span></button>  
+    </div>  
+</nav>
+
+<!-- 20 Engines Registry & Bengali Explainability Modal -->
+<div id="enginesExplainModal" class="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm hidden flex items-end sm:items-center justify-center p-0 sm:p-3">
+    <div class="groww-card rounded-t-3xl sm:rounded-3xl w-full max-w-md p-4 space-y-3 max-h-[90vh] flex flex-col shadow-2xl bg-white">
+        <div class="flex items-center justify-between border-b border-slate-200 pb-2">
+            <div>
+                <h3 class="text-sm font-black text-slate-900 heading-font">২০টি Engine Registry &amp; বাংলা ব্যাখ্যা</h3>
+                <p id="enginesModalSub" class="text-[9.5px] text-slate-500 font-mono">Signal Fusion v2 • No Look-Ahead • Replay Audit</p>
+            </div>
+            <button type="button" onclick="document.getElementById('enginesExplainModal').classList.add('hidden')" class="w-8 h-8 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center"><i class="fa-solid fa-xmark text-sm"></i></button>
+        </div>
+        <div id="enginesModalBody" class="flex-1 overflow-y-auto space-y-2 pr-1 text-[10px]"></div>
+        <div class="flex space-x-2 pt-2 border-t border-slate-200">
+            <button type="button" onclick="exportEngineReplaySnapshot()" class="flex-1 bg-slate-100 text-slate-800 font-bold py-2 rounded-xl text-[10px] border border-slate-200">Export Replay JSON</button>
+            <button type="button" onclick="document.getElementById('enginesExplainModal').classList.add('hidden')" class="flex-1 groww-btn-green py-2 rounded-xl text-[10px] font-black">Close</button>
+        </div>
+    </div>
+</div>
+
+<script src="engines.js"></script>
+<script src="app.js"></script>
+<script>
+window.addEventListener("DOMContentLoaded", () => {
+    const tradeDesk = document.getElementById("twoWayExecutionDeskCard");
+    const tradePage = document.getElementById("tabContentTrade");
+    if (tradeDesk && tradePage) tradePage.appendChild(tradeDesk);
+
+    const riskBlock = document.getElementById("positionRiskGuardBlock");
+    const settingsRiskCard = document.getElementById("settingsRiskGuardCard");
+    if (riskBlock && settingsRiskCard) {
+        settingsRiskCard.classList.remove("hidden");
+        settingsRiskCard.appendChild(riskBlock);
+    }
+});
+</script>
+
+</body>  
+</html>

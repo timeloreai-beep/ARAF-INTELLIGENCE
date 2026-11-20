@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: araf-intelligence-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LIVE_TRADING_ENABLED
+        value: false
