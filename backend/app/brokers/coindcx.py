@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import httpx
+from httpx import AsyncBaseTransport
 
 from ..config import get_settings
 from .base import BrokerAdapter, BrokerOrderResult, BrokerQuote
@@ -16,10 +17,11 @@ from .base import BrokerAdapter, BrokerOrderResult, BrokerQuote
 class CoinDCXAdapter(BrokerAdapter):
     BASE_URL = "https://api.coindcx.com"
 
-    def __init__(self) -> None:
+    def __init__(self, transport: AsyncBaseTransport | None = None) -> None:
         settings = get_settings()
         self.api_key = settings.coindcx_api_key
         self.api_secret = settings.coindcx_api_secret
+        self.transport = transport
 
     def _signature(self, payload: dict[str, Any]) -> str:
         if not self.api_secret:
@@ -30,7 +32,8 @@ class CoinDCXAdapter(BrokerAdapter):
     async def login(self) -> dict[str, Any]:
         if not self.api_key or not self.api_secret:
             raise RuntimeError("CoinDCX credentials are incomplete")
-        return {"stat": "Ok", "linked": True}
+        positions = await self.get_positions()
+        return {"stat": "Ok", "linked": True, "positions_count": len(positions)}
 
     async def get_quote(self, symbol: str, exchange: str = "COINDCX") -> BrokerQuote | None:
         raw_pair = symbol.upper()
@@ -39,7 +42,7 @@ class CoinDCXAdapter(BrokerAdapter):
             market_pair = raw_pair
         else:
             market_pair = f"B-{pair[:-4]}_USDT" if pair.endswith("USDT") else f"B-{pair}_USDT"
-        async with httpx.AsyncClient(timeout=12) as client:
+        async with httpx.AsyncClient(timeout=12, transport=self.transport) as client:
             response = await client.get(
                 "https://public.coindcx.com/market_data/v3/current_prices/futures/rt"
             )
@@ -78,7 +81,7 @@ class CoinDCXAdapter(BrokerAdapter):
             },
         }
         signature = self._signature(payload)
-        async with httpx.AsyncClient(timeout=12) as client:
+        async with httpx.AsyncClient(timeout=12, transport=self.transport) as client:
             response = await client.post(
                 f"{self.BASE_URL}/exchange/v1/derivatives/futures/orders/create",
                 json=payload,
@@ -103,7 +106,7 @@ class CoinDCXAdapter(BrokerAdapter):
             raise RuntimeError("CoinDCX credentials are incomplete")
         payload = {"timestamp": int(time.time() * 1000), "page": "1", "size": "50"}
         signature = self._signature(payload)
-        async with httpx.AsyncClient(timeout=12) as client:
+        async with httpx.AsyncClient(timeout=12, transport=self.transport) as client:
             response = await client.post(
                 f"{self.BASE_URL}/exchange/v1/derivatives/futures/positions",
                 json=payload,

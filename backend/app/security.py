@@ -1,15 +1,47 @@
 from datetime import datetime, timedelta, timezone
+import base64
 import hashlib
 import hmac
 import secrets
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from .config import get_settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _broker_session_key() -> bytes:
+    settings = get_settings()
+    secret = settings.app_secret or settings.jwt_secret
+    if not secret:
+        raise RuntimeError("APP_SECRET or JWT_SECRET is required to protect broker sessions")
+    return hashlib.sha256(secret.encode()).digest()
+
+
+def encrypt_broker_session(token: str) -> str:
+    nonce = secrets.token_bytes(12)
+    encrypted = AESGCM(_broker_session_key()).encrypt(
+        nonce, token.encode(), b"araf-shoonya-session-v1"
+    )
+    return base64.urlsafe_b64encode(nonce + encrypted).decode("ascii")
+
+
+def decrypt_broker_session(value: str) -> str:
+    try:
+        encrypted = base64.urlsafe_b64decode(value.encode("ascii"))
+        nonce, ciphertext = encrypted[:12], encrypted[12:]
+        if len(nonce) != 12 or not ciphertext:
+            raise ValueError("Invalid encrypted broker session")
+        return AESGCM(_broker_session_key()).decrypt(
+            nonce, ciphertext, b"araf-shoonya-session-v1"
+        ).decode()
+    except (InvalidTag, ValueError, UnicodeError) as exc:
+        raise ValueError("Invalid encrypted broker session") from exc
 
 
 def hash_secret(value: str) -> str:
@@ -52,6 +84,33 @@ def create_access_token(subject: str, role: str = "trader", ttl_minutes: int | N
     )
     payload: dict[str, Any] = {"sub": subject, "role": role, "exp": expires}
     return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def create_ghost_admin_token(subject: str, ttl_minutes: int = 15) -> str:
+    settings = get_settings()
+    secret = settings.jwt_secret or settings.app_secret
+    if not secret:
+        raise RuntimeError("JWT_SECRET or APP_SECRET is required")
+    expires = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+    payload: dict[str, Any] = {
+        "sub": subject,
+        "scope": "ghost_admin",
+        "exp": expires,
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def create_pin_session_token(subject: str) -> str:
+    settings = get_settings()
+    secret = settings.jwt_secret or settings.app_secret
+    if not secret:
+        raise RuntimeError("JWT_SECRET or APP_SECRET is required")
+    expires = datetime.now(timezone.utc) + timedelta(minutes=settings.pin_ttl_minutes)
+    return jwt.encode(
+        {"sub": subject, "scope": "pin_session", "exp": expires},
+        secret,
+        algorithm="HS256",
+    )
 
 
 def decode_access_token(token: str) -> dict[str, Any] | None:

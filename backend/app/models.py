@@ -36,6 +36,7 @@ class AppUser(Base):
     external_subject: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     provider: Mapped[str] = mapped_column(String(64), default="supabase")
     email: Mapped[str] = mapped_column(String(255), index=True, nullable=True)
+    trader_uid: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=True)
     display_name: Mapped[str] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(String(32), default="user")
     kyc_status: Mapped[str] = mapped_column(String(32), default="pending")
@@ -122,11 +123,20 @@ class RiskConfig(Base):
 
     user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     capital_inr: Mapped[float] = mapped_column(Numeric(38, 12), default=100000)
-    max_daily_loss_pct: Mapped[float] = mapped_column(Float, default=2.5)
+    max_daily_loss_amount: Mapped[float] = mapped_column(Numeric(38, 12), default=2500)
     max_per_trade_risk_pct: Mapped[float] = mapped_column(Float, default=2.0)
-    max_trades_per_day: Mapped[int] = mapped_column(Integer, default=5)
+    max_trades_per_day: Mapped[int] = mapped_column(Integer, default=3)
     is_locked: Mapped[bool] = mapped_column(Boolean, default=False)
     lock_reason: Mapped[str] = mapped_column(String(255), nullable=True)
+    risk_lock_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    risk_lock_watermark_inr: Mapped[float] = mapped_column(
+        Numeric(38, 12), default=0
+    )
+    daily_loss_lock_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
@@ -148,6 +158,124 @@ class RiskState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+
+
+class AutoTradeDailyBudget(Base):
+    __tablename__ = "auto_trade_daily_budgets"
+
+    user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    trading_day: Mapped[str] = mapped_column(String(10), primary_key=True)
+    budget_inr: Mapped[float] = mapped_column(Numeric(38, 12))
+    reserved_inr: Mapped[float] = mapped_column(Numeric(38, 12), default=0)
+    used_inr: Mapped[float] = mapped_column(Numeric(38, 12), default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class PaperPosition(Base):
+    __tablename__ = "paper_positions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "client_order_id", name="uq_paper_positions_user_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    client_order_id: Mapped[str] = mapped_column(String(64), index=True)
+    symbol: Mapped[str] = mapped_column(String(64), index=True)
+    exchange: Mapped[str] = mapped_column(String(32), index=True)
+    broker_token: Mapped[str] = mapped_column(String(32), nullable=True)
+    side: Mapped[str] = mapped_column(String(8))
+    quantity: Mapped[float] = mapped_column(Numeric(38, 12))
+    entry_price: Mapped[float] = mapped_column(Numeric(38, 12))
+    stop_loss: Mapped[float] = mapped_column(Numeric(38, 12))
+    take_profit: Mapped[float] = mapped_column(Numeric(38, 12))
+    trailing_distance: Mapped[float] = mapped_column(Numeric(38, 12))
+    favorable_price: Mapped[float] = mapped_column(Numeric(38, 12))
+    pnl_fx_to_inr: Mapped[float] = mapped_column(Numeric(38, 12), default=1)
+    status: Mapped[str] = mapped_column(String(16), default="OPEN", index=True)
+    is_auto_trade: Mapped[bool] = mapped_column(Boolean, default=False)
+    exit_price: Mapped[float] = mapped_column(Numeric(38, 12), nullable=True)
+    realized_pnl: Mapped[float] = mapped_column(Numeric(38, 12), default=0)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    exit_reason: Mapped[str] = mapped_column(String(32), nullable=True)
+    manual_exit_blocked_until: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    preferences: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class AdminControl(Base):
+    __tablename__ = "admin_controls"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="global")
+    auto_trade_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    global_kill_switch: Mapped[bool] = mapped_column(Boolean, default=False)
+    kill_switch_reason: Mapped[str] = mapped_column(String(255), nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class AuthOtpChallenge(Base):
+    __tablename__ = "auth_otp_challenges"
+    __table_args__ = (
+        UniqueConstraint("email", "purpose", name="uq_auth_otp_email_purpose"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    purpose: Mapped[str] = mapped_column(String(32))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class PinCredential(Base):
+    __tablename__ = "pin_credentials"
+
+    user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    salt_hex: Mapped[str] = mapped_column(String(64))
+    pin_hash: Mapped[str] = mapped_column(String(128))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class KycRecord(Base):
+    __tablename__ = "kyc_records"
+
+    user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    trader_uid: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(120))
+    pan_masked: Mapped[str] = mapped_column(String(16))
+    aadhaar_masked: Mapped[str] = mapped_column(String(16))
+    income_bracket: Mapped[str] = mapped_column(String(64), default="-")
+    experience: Mapped[str] = mapped_column(String(64), default="-")
+    authorized_segment: Mapped[str] = mapped_column(String(32), default="ALL")
+    status: Mapped[str] = mapped_column(String(32), default="PENDING_ADMIN_REVIEW", index=True)
+    encrypted_pii: Mapped[str] = mapped_column(Text)
+    trial_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class AuditEvent(Base):

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow">
+    <title>ARAF Ghost Admin</title>
+    <style>
+        :root { color-scheme: dark; font-family: Segoe UI, sans-serif; background: #0b1220; color: #e2e8f0; }
+        body { margin: 0 auto; max-width: 1000px; padding: 24px; }
+        h1, h2 { margin: 0; }
+        .card { background: #111b2b; border: 1px solid #263449; border-radius: 14px; padding: 18px; margin: 16px 0; }
+        .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+        input, select, button { box-sizing: border-box; border: 1px solid #334155; border-radius: 8px; padding: 10px; color: #e2e8f0; background: #0b1220; }
+        input, select { width: 100%; }
+        button { cursor: pointer; font-weight: 700; }
+        button:hover { border-color: #34d399; }
+        button.danger { background: #7f1d1d; border-color: #ef4444; }
+        button.safe { background: #065f46; border-color: #10b981; }
+        .muted { color: #94a3b8; font-size: 13px; }
+        .status { color: #fbbf24; white-space: pre-wrap; }
+        .service { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid #263449; }
+        .healthy { color: #34d399; } .error { color: #f87171; } .pending { color: #fbbf24; }
+        #dashboard[hidden], #login[hidden] { display: none; }
+    </style>
+</head>
+<body>
+    <header class="row">
+        <div>
+            <h1>Ghost Admin</h1>
+            <p class="muted">Restricted control surface • paper execution only • hard risk limits always apply</p>
+        </div>
+        <button id="logout" type="button" hidden>Logout</button>
+    </header>
+
+    <section id="login" class="card">
+        <h2>Admin authentication</h2>
+        <p class="muted">Use the server-side ADMIN_PASSWORD. This page never stores the password.</p>
+        <form id="login-form" class="row">
+            <input id="admin-password" type="password" autocomplete="current-password" required minlength="8" aria-label="Admin password">
+            <button class="safe" type="submit">Unlock</button>
+        </form>
+    </section>
+
+    <main id="dashboard" hidden>
+        <section class="card">
+            <div class="row">
+                <h2>Global Auto-Trade Control</h2>
+                <button id="auto-start" class="safe" type="button">Start Paper Bot</button>
+                <button id="auto-stop" type="button">Stop Auto-Trade</button>
+                <button id="kill-activate" class="danger" type="button">Activate Global Kill Switch</button>
+                <button id="kill-release" type="button">Release Global Kill Switch</button>
+            </div>
+            <p id="control-state" class="status">Loading control state…</p>
+            <p class="muted">Auto-trade control is separate from the global kill switch. The kill switch blocks all new entries; neither control can override risk limits or priority-news protection.</p>
+            <p id="risk-limits" class="muted"></p>
+            <div class="row">
+                <input id="risk-reset-target" maxlength="255" placeholder="User ID for early risk-lock reset" aria-label="User ID for early risk-lock reset">
+                <button id="risk-reset" class="danger" type="button">Admin: Unlock Risk Lock</button>
+            </div>
+            <p class="muted">This admin-only action clears the selected user's 24-hour loss watermark and trade lock.</p>
+        </section>
+
+        <section class="card">
+            <div class="row">
+                <h2>Manual Paper Override</h2>
+                <span class="muted">Risk-checked; blocked by the global kill switch; cannot place live broker orders.</span>
+            </div>
+            <form id="manual-order-form" class="grid">
+                <input id="manual-symbol" required maxlength="30" placeholder="Symbol (e.g. RELIANCE)">
+                <select id="manual-exchange">
+                    <option>NSE</option><option>BSE</option><option>NFO</option><option>BFO</option><option>COINDCX</option>
+                </select>
+                <select id="manual-side"><option>BUY</option><option>SELL</option></select>
+                <input id="manual-quantity" type="number" min="0.0001" step="any" required placeholder="Quantity">
+                <input id="manual-entry" type="number" min="0.000001" step="any" required placeholder="Entry price">
+                <input id="manual-stop" type="number" min="0.000001" step="any" required placeholder="Stop loss">
+                <input id="manual-target" type="number" min="0.000001" step="any" placeholder="Take profit (optional)">
+                <button class="safe" type="submit">Submit Paper Override</button>
+            </form>
+            <p id="manual-result" class="status" role="status"></p>
+        </section>
+
+        <section class="card">
+            <div class="row">
+                <h2>Live Scanner Feed</h2>
+                <button id="scan-now" type="button">Run India Scan</button>
+                <button id="refresh-scanner" type="button">Refresh Feed</button>
+            </div>
+            <div id="scanner-feed" class="muted">No scanner snapshots loaded.</div>
+        </section>
+
+        <section class="card">
+            <div class="row">
+                <h2>Service Health</h2>
+                <button id="refresh-health" type="button">Refresh Health</button>
+            </div>
+            <div id="health-feed" class="muted">Loading health…</div>
+            <h3>News Provider Status</h3>
+            <div id="news-health" class="muted"></div>
+        </section>
+        <p id="page-status" class="status" role="status"></p>
+    </main>
+    <script src="/ghost-admin.js" defer></script>
+</body>
+</html>

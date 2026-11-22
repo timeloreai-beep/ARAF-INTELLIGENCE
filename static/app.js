@@ -8,11 +8,25 @@
                  Complete 10+8 Quant Engine • Walk-Forward Overfitting Guard
    ========================================================================== */
 
-const CLOUDFLARE_GATEWAY = "https://soft-dawn-28a0.timeloreai.workers.dev/";
-
 const FASTAPI_BASE_URL = (
     document.querySelector('meta[name="araf-api-base"]')?.content?.trim() || window.location.origin
 ).replace(/\/+$/, "");
+const FASTAPI_TARGET_ROUTES = Object.freeze({
+    health: "/health",
+    news_feed: "/news/feed",
+    get_risk_state: "/risk/state",
+    login_with_trader_uid: "/auth/resolve-trader-uid"
+});
+const FASTAPI_AUTH_FALLBACK_TARGETS = new Set([
+    "login_with_trader_uid"
+]);
+const LOCAL_TERMINAL_SETTINGS_KEY = "ARAF_TERMINAL_SETTINGS";
+let terminalPreferences = {
+    theme: "light",
+    news_lang: "en-US",
+    news_voice_digest_enabled: true,
+    chart_timeframe: "15m"
+};
 
 const TERMINAL_EXECUTION_MODE = "PAPER";
 const LIVE_AUTO_TRADING_ENABLED = false;
@@ -116,11 +130,12 @@ const SESSION_VAULT = {
         tradesCount: 0,
         dailyPnlInr: 0,
         capitalInr: 100000,
-        maxDailyLossPct: 2.5,
+        maxDailyLossAmount: 2500,
         dailyLossLimitInr: -2500,
         maxTradesPerDay: 3
     },
     fastPositionsMap: {},
+    paperAutomationPositions: [],
     localCandleHistory: {},
     activeBracketOrders: {},
     shoonyaLiveBalance: "Please connect your Shoonya API Key",
@@ -160,6 +175,10 @@ let lastUiUpdateTime = 0;
 let lastQuantUiTime = 0;
 let isOrderDispatching = false;
 let isPnlBreachSyncInFlight = false;
+let lastRiskPnlSyncAt = 0;
+let riskPnlSyncFailed = false;
+let serverRiskStateLoaded = false;
+let serverAutoTradeStateLoaded = false;
 let selectedCryptoLeverage = 1;
 
 const LIVE_L2_DEPTH_MAP = {};
@@ -239,7 +258,7 @@ const MASTER_ASSETS = [
 ];
 
 currentSelectedAsset = MASTER_ASSETS[0];
-const GEOPOLITICAL_KEYWORDS = ["trump", "tariff", "war", "middle east", "iran", "israel", "china", "fed rate", "crude oil", "rbi", "inflation", "trade war", "sanction", "strike", "rbi rate", "sebi", "earnings", "merger", "acquisition"];
+const GEOPOLITICAL_KEYWORDS = ["trump", "tariff", "war", "geopolitic", "middle east", "iran", "israel", "china", "fed rate", "federal reserve", "crude oil", "rbi", "inflation", "trade war", "sanction", "strike", "rbi rate", "fii", "dii", "institutional flow", "sebi", "earnings", "merger", "acquisition"];
 let activeIpoFilter = "all";
 
 function sanitizeCleanText(str) {
@@ -249,7 +268,36 @@ function sanitizeCleanText(str) {
     return temp.innerHTML;
 }
 
+function normalizeFastApiTargetResponse(target, response) {
+    if (target === "health" && response.ok && response.data) {
+        response.data = {
+            ...response.data,
+            ok: response.data.status === "ok",
+            liveTradingEnabled: response.data.live_trading_enabled === true
+        };
+    }
+    return response;
+}
+
 async function secureApiCall(target, options = {}) {
+    const fastApiPath = FASTAPI_TARGET_ROUTES[target];
+    if (fastApiPath) {
+        const response = await fastApiRequest(fastApiPath, {
+            method: options.method || "GET",
+            body: options.jsonBody,
+            headers: options.headers,
+            timeoutMs: options.timeoutMs,
+            forceTokenRefresh: options.forceTokenRefresh === true
+        });
+        if (
+            response.ok ||
+            !FASTAPI_AUTH_FALLBACK_TARGETS.has(target) ||
+            ![0, 404, 500, 501, 502, 503, 504].includes(response.status)
+        ) {
+            return normalizeFastApiTargetResponse(target, response);
+        }
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || 15000);
 
@@ -266,8 +314,11 @@ async function secureApiCall(target, options = {}) {
             headers["Content-Type"] = "application/json";
         }
 
-        const queryExtra = options.query ? `&${options.query}` : "";
-        const res = await fetch(`${CLOUDFLARE_GATEWAY}?target=${encodeURIComponent(target)}${queryExtra}`, {
+        const proxyQuery = new URLSearchParams({ target });
+        if (options.query) {
+            new URLSearchParams(options.query).forEach((value, key) => proxyQuery.append(key, value));
+        }
+        const res = await fetch(`${FASTAPI_BASE_URL}/legacy?${proxyQuery.toString()}`, {
             method: options.method || "GET",
             headers,
             body: options.jsonBody !== undefined ? JSON.stringify(options.jsonBody) : options.body,
@@ -280,6 +331,120 @@ async function secureApiCall(target, options = {}) {
     } finally {
         clearTimeout(timeoutId);
     }
+}
+
+function loadLocalTerminalPreferences() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(LOCAL_TERMINAL_SETTINGS_KEY) || "{}");
+        terminalPreferences = { ...terminalPreferences, ...(saved && typeof saved === "object" ? saved : {}) };
+    } catch (error) {
+        console.warn("[Preferences] Ignoring invalid local terminal settings:", error.message);
+    }
+    applyTerminalTheme(terminalPreferences.theme);
+    if (terminalPreferences.news_lang) SESSION_VAULT.newsLang = terminalPreferences.news_lang;
+    if (typeof newsVoiceDigestEnabled !== "undefined") {
+        newsVoiceDigestEnabled = terminalPreferences.news_voice_digest_enabled !== false;
+    }
+}
+
+function loadLocalRiskConfig() {
+    try {
+        const saved = JSON.parse(localStorage.getItem("ARAF_RISK_CONFIG") || "{}");
+        const savedCapital = Number(saved.capital_inr || 100000);
+        const savedLossAmount = saved.max_daily_loss_amount
+            ?? (Number.isFinite(Number(saved.max_daily_loss_pct))
+                ? savedCapital * Number(saved.max_daily_loss_pct) / 100
+                : undefined);
+        const fields = {
+            riskCapitalInput: saved.capital_inr,
+            riskMaxDailyLossAmount: savedLossAmount,
+            riskPerTradePctInput: saved.max_per_trade_risk_pct,
+            riskMaxTradesSelect: Math.min(1000, Math.max(1, Number(saved.max_trades_per_day || 3)))
+        };
+        Object.entries(fields).forEach(([id, value]) => {
+            const input = document.getElementById(id);
+            if (input && value !== undefined && Number.isFinite(Number(value))) input.value = String(value);
+        });
+    } catch (error) {
+        console.warn("[Risk settings] Ignoring invalid local risk configuration:", error.message);
+    }
+}
+
+function applyTerminalTheme(theme, updateButton = true) {
+    terminalPreferences.theme = theme === "dark" ? "dark" : "light";
+    document.documentElement.dataset.theme = terminalPreferences.theme;
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme) metaTheme.content = terminalPreferences.theme === "dark" ? "#0b1220" : "#ffffff";
+    const button = document.getElementById("themeToggleButton");
+    if (button && updateButton) {
+        button.textContent = terminalPreferences.theme === "dark" ? "Light mode" : "Dark mode";
+        button.setAttribute("aria-pressed", String(terminalPreferences.theme === "dark"));
+    }
+}
+
+async function fastApiRequest(path, options = {}) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || 12000);
+    try {
+        const headers = { ...(options.headers || {}) };
+        if (auth.currentUser) {
+            headers.Authorization = `Bearer ${await auth.currentUser.getIdToken(options.forceTokenRefresh === true)}`;
+        }
+        if (SESSION_VAULT.pinSessionToken) {
+            headers["X-Pin-Token"] = SESSION_VAULT.pinSessionToken;
+        }
+        if (options.body !== undefined) headers["Content-Type"] = "application/json";
+        const response = await fetch(`${FASTAPI_BASE_URL}${path}`, {
+            method: options.method || "GET",
+            headers,
+            body: options.body === undefined ? undefined : JSON.stringify(options.body),
+            signal: controller.signal,
+            cache: "no-store"
+        });
+        const data = await response.json().catch(() => ({}));
+        return { ok: response.ok, status: response.status, data };
+    } catch (error) {
+        return {
+            ok: false,
+            status: 0,
+            data: { detail: error.name === "AbortError" ? "FastAPI request timed out" : error.message }
+        };
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+async function syncTerminalPreferences() {
+    if (!auth.currentUser) return;
+    const response = await fastApiRequest("/preferences");
+    if (!response.ok || !response.data?.preferences) {
+        const status = document.getElementById("themeSyncStatus");
+        if (status) status.textContent = "Local preference active; server sync unavailable.";
+        return;
+    }
+    terminalPreferences = { ...terminalPreferences, ...response.data.preferences };
+    applyTerminalTheme(terminalPreferences.theme);
+    SESSION_VAULT.newsLang = terminalPreferences.news_lang || "en-US";
+    newsVoiceDigestEnabled = terminalPreferences.news_voice_digest_enabled !== false;
+    localStorage.setItem(LOCAL_TERMINAL_SETTINGS_KEY, JSON.stringify(terminalPreferences));
+    const status = document.getElementById("themeSyncStatus");
+    if (status) status.textContent = "Settings synced.";
+}
+
+async function saveTerminalPreferences() {
+    localStorage.setItem(LOCAL_TERMINAL_SETTINGS_KEY, JSON.stringify(terminalPreferences));
+    if (!auth.currentUser) return;
+    const response = await fastApiRequest("/preferences", {
+        method: "PUT",
+        body: terminalPreferences
+    });
+    const status = document.getElementById("themeSyncStatus");
+    if (status) status.textContent = response.ok ? "Settings synced." : "Saved locally; server sync failed.";
+}
+
+function toggleTerminalTheme() {
+    applyTerminalTheme(terminalPreferences.theme === "dark" ? "light" : "dark");
+    void saveTerminalPreferences();
 }
 
 async function testFastApiQuote(broker) {
@@ -425,39 +590,94 @@ function checkSettingsRiskGuardVisibility() {
 
 function applyRiskStateToUi(risk) {
     if (!risk) return;
-    SESSION_VAULT.serverRiskState = risk;
+    const normalized = {
+        ...risk,
+        capitalInr: risk.capitalInr ?? risk.capital_inr,
+        maxDailyLossAmount: risk.maxDailyLossAmount ?? risk.max_daily_loss_amount,
+        maxPerTradeRiskPct: risk.maxPerTradeRiskPct ?? risk.max_per_trade_risk_pct,
+        maxTradesPerDay: Math.min(1000, Number(risk.maxTradesPerDay ?? risk.max_trades_per_day ?? 3)),
+        dailyPnlInr: risk.dailyPnlInr ?? risk.daily_pnl_inr,
+        tradesCount: risk.tradesCount ?? risk.trades_count,
+        isHardLocked: risk.isHardLocked ?? risk.is_hard_locked,
+        lockedReason: risk.lockedReason ?? risk.locked_reason,
+        riskLockExpiresAt: risk.riskLockExpiresAt ?? risk.risk_lock_expires_at,
+        dailyLossLimitInr: risk.dailyLossLimitInr ?? risk.daily_loss_limit_inr
+    };
+    if (!Number.isFinite(Number(normalized.dailyLossLimitInr))) {
+        normalized.dailyLossLimitInr = -Math.abs(Number(normalized.maxDailyLossAmount || 2500));
+    }
+    SESSION_VAULT.serverRiskState = normalized;
+    serverRiskStateLoaded = true;
+    riskPnlSyncFailed = false;
     const capEl = document.getElementById("riskCapitalInput");
-    const pctEl = document.getElementById("riskLossPctSelect");
+    const lossAmountEl = document.getElementById("riskMaxDailyLossAmount");
+    const tradeRiskEl = document.getElementById("riskPerTradePctInput");
     const maxTrEl = document.getElementById("riskMaxTradesSelect");
     const badgeEl = document.getElementById("riskLimitDisplayBadge");
+    const lockStatusEl = document.getElementById("riskLockStatus");
+    const riskInputs = [capEl, lossAmountEl, tradeRiskEl, maxTrEl];
+    const lockExpiresAt = Date.parse(normalized.riskLockExpiresAt || "");
+    const configLocked = (
+        Number.isFinite(lockExpiresAt) && lockExpiresAt > Date.now()
+    ) || normalized.isHardLocked === true;
 
-    if (capEl && risk.capitalInr) capEl.value = risk.capitalInr;
-    if (pctEl && risk.maxDailyLossPct) {
-        const valStr = String(risk.maxDailyLossPct);
-        if (!Array.from(pctEl.options).some(o => o.value === valStr)) {
-            const opt = document.createElement("option");
-            opt.value = valStr;
-            opt.textContent = `${valStr}%`;
-            pctEl.appendChild(opt);
-        }
-        pctEl.value = valStr;
+    if (capEl && normalized.capitalInr) capEl.value = normalized.capitalInr;
+    if (lossAmountEl && normalized.maxDailyLossAmount) lossAmountEl.value = normalized.maxDailyLossAmount;
+    if (tradeRiskEl && normalized.maxPerTradeRiskPct) tradeRiskEl.value = normalized.maxPerTradeRiskPct;
+    if (maxTrEl && normalized.maxTradesPerDay) maxTrEl.value = normalized.maxTradesPerDay;
+    riskInputs.forEach(input => { if (input) input.disabled = configLocked; });
+    const saveRiskButton = document.querySelector("#settingsRiskGuardCard button[onclick='saveUserRiskConfig()']");
+    const syncCapitalButton = document.querySelector("#settingsRiskGuardCard button[onclick='syncBrokerCapitalToRiskInput()']");
+    if (saveRiskButton) saveRiskButton.disabled = configLocked;
+    if (syncCapitalButton) syncCapitalButton.disabled = configLocked;
+    if (lockStatusEl) {
+        lockStatusEl.textContent = configLocked
+            ? `Server locked until ${new Date(lockExpiresAt).toLocaleString()}`
+            : "Risk settings unlock when the 24-hour server lock expires.";
     }
-    if (maxTrEl && risk.maxTradesPerDay) maxTrEl.value = String(risk.maxTradesPerDay);
     if (badgeEl) {
-        const lim = Math.abs(risk.dailyLossLimitInr || 2500);
-        badgeEl.textContent = `Limit: -₹${lim.toLocaleString("en-IN")} (${risk.tradesCount || 0}/${risk.maxTradesPerDay || 3})`;
+        const lim = Math.abs(normalized.dailyLossLimitInr || 2500);
+        badgeEl.textContent = `Limit: -₹${lim.toLocaleString("en-IN")} (${normalized.tradesCount || 0}/${normalized.maxTradesPerDay || 3})`;
     }
     calculateSafeQtySuggestion();
     checkHardKillSwitchLock();
     checkSettingsRiskGuardVisibility();
+    if (serverAutoTradeStateLoaded) renderAutoTradeUi();
 }
 
 function checkHardKillSwitchLock() {
+    if (auth.currentUser && (!serverRiskStateLoaded || riskPnlSyncFailed)) {
+        setRiskControlsDisabled(true);
+        const hud = document.getElementById("hudUserStatusText");
+        if (hud) hud.textContent = "Server risk status unavailable — entries blocked";
+        return true;
+    }
+    if (riskPnlSyncFailed) {
+        const hud = document.getElementById("hudUserStatusText");
+        if (hud) hud.textContent = "Risk P&L sync unavailable — entries blocked";
+        return true;
+    }
     if (SESSION_VAULT.serverRiskState?.isHardLocked === true) {
         applyHardLockUi(SESSION_VAULT.serverRiskState.dailyPnlInr || getActiveDailyLossLimitInr());
         return true;
     }
     return false;
+}
+
+function setRiskControlsDisabled(disabled) {
+    [
+        "riskCapitalInput",
+        "riskMaxDailyLossAmount",
+        "riskPerTradePctInput",
+        "riskMaxTradesSelect"
+    ].forEach(id => {
+        const input = document.getElementById(id);
+        if (input) input.disabled = disabled;
+    });
+    const saveRiskButton = document.querySelector("#settingsRiskGuardCard button[onclick='saveUserRiskConfig()']");
+    const syncCapitalButton = document.querySelector("#settingsRiskGuardCard button[onclick='syncBrokerCapitalToRiskInput()']");
+    if (saveRiskButton) saveRiskButton.disabled = disabled;
+    if (syncCapitalButton) syncCapitalButton.disabled = disabled;
 }
 
 function applyHardLockUi(lossAmount) {
@@ -467,11 +687,47 @@ function applyHardLockUi(lossAmount) {
     }
 }
 
-async function syncServerRiskState() {
-    if (!auth.currentUser) return;
-    const res = await secureApiCall("get_risk_state", { method: "GET" });
-    if (res.ok && res.data?.risk) {
+function syncDailyPnlToServer(dailyPnlInr, force = false) {
+    if (!auth.currentUser || !Number.isFinite(dailyPnlInr) || isPnlBreachSyncInFlight) return;
+    const now = Date.now();
+    if (!force && now - lastRiskPnlSyncAt < 1000) return;
+    lastRiskPnlSyncAt = now;
+    isPnlBreachSyncInFlight = true;
+    fastApiRequest("/risk/pnl", {
+        method: "POST",
+        body: { daily_pnl_inr: dailyPnlInr }
+    }).then(res => {
+        if (!res.ok || !res.data?.risk) {
+            riskPnlSyncFailed = true;
+            console.error("Server risk P&L synchronization failed", res.data?.detail || res.status);
+            checkHardKillSwitchLock();
+            return;
+        }
+        riskPnlSyncFailed = false;
         applyRiskStateToUi(res.data.risk);
+    }).catch(error => {
+        riskPnlSyncFailed = true;
+        console.error("Server risk P&L synchronization failed", error);
+        checkHardKillSwitchLock();
+    }).finally(() => {
+        isPnlBreachSyncInFlight = false;
+    });
+}
+
+async function syncServerRiskState() {
+    if (!auth.currentUser) return false;
+    try {
+        const res = await fastApiRequest("/risk/state");
+        if (!res.ok || !res.data?.risk) {
+            throw new Error(res.data?.detail || `Risk state request failed (${res.status})`);
+        }
+        applyRiskStateToUi(res.data.risk);
+        return true;
+    } catch (error) {
+        riskPnlSyncFailed = true;
+        console.error("Authoritative server risk state could not be loaded", error);
+        checkHardKillSwitchLock();
+        return false;
     }
 }
 
@@ -490,18 +746,37 @@ async function syncBrokerCapitalToRiskInput() {
 
 async function saveUserRiskConfig() {
     const capitalInr = Number(document.getElementById("riskCapitalInput")?.value || 100000);
-    const maxDailyLossPct = Number(document.getElementById("riskLossPctSelect")?.value || 2);
+    const maxDailyLossAmount = Number(document.getElementById("riskMaxDailyLossAmount")?.value || 2500);
     const maxTradesPerDay = Number(document.getElementById("riskMaxTradesSelect")?.value || 3);
+    const maxPerTradeRiskPct = Number(document.getElementById("riskPerTradePctInput")?.value || 1);
+    if (![capitalInr, maxDailyLossAmount, maxTradesPerDay, maxPerTradeRiskPct].every(Number.isFinite)
+        || maxDailyLossAmount < 1 || maxDailyLossAmount > 100000000
+        || !Number.isInteger(maxTradesPerDay) || maxTradesPerDay < 1 || maxTradesPerDay > 1000) {
+        alert("Enter a daily loss amount from ₹1 to ₹10 crore and max daily trades between 1 and 1,000.");
+        return;
+    }
 
-    const res = await secureApiCall("set_risk_config", {
+    const res = await fastApiRequest("/risk/configure", {
         method: "POST",
-        jsonBody: { capitalInr, maxDailyLossPct, maxTradesPerDay }
+        body: {
+            capital_inr: capitalInr,
+            max_daily_loss_amount: maxDailyLossAmount,
+            max_trades_per_day: maxTradesPerDay,
+            max_per_trade_risk_pct: maxPerTradeRiskPct
+        }
     });
     if (res.ok && res.data?.success) {
+        localStorage.setItem("ARAF_RISK_CONFIG", JSON.stringify({
+            capital_inr: capitalInr,
+            max_daily_loss_amount: maxDailyLossAmount,
+            max_trades_per_day: maxTradesPerDay,
+            max_per_trade_risk_pct: maxPerTradeRiskPct
+        }));
         applyRiskStateToUi(res.data.risk);
-        alert(`Day Risk Locked on Server!\nCapital: ₹${res.data.risk.capitalInr.toLocaleString("en-IN")}\nDaily Loss Limit: -₹${Math.abs(res.data.risk.dailyLossLimitInr).toLocaleString("en-IN")}\nMax Trades: ${res.data.risk.maxTradesPerDay}`);
+        alert(`Day Risk Locked on Server!\nCapital: ₹${Number(res.data.risk.capital_inr).toLocaleString("en-IN")}\nDaily Loss Limit: -₹${Math.abs(Number(res.data.risk.daily_loss_limit_inr || 0)).toLocaleString("en-IN")}\nMax Trades: ${res.data.risk.max_trades_per_day}`);
     } else {
-        alert(res.data?.message || "Failed to update risk config.");
+        const detail = res.data?.detail;
+        alert(typeof detail === "string" ? detail : (detail?.message || "Failed to update risk config."));
     }
 }
 
@@ -515,7 +790,10 @@ function calculateSafeQtySuggestion() {
 
     const slVal = Number(document.getElementById("tradeSlPriceInput")?.value);
     const capInr = Number(document.getElementById("riskCapitalInput")?.value) || SESSION_VAULT.serverRiskState?.capitalInr || 100000;
-    const riskBudgetInr = capInr * 0.01;
+    const configuredRiskPct = Number(document.getElementById("riskPerTradePctInput")?.value)
+        || SESSION_VAULT.serverRiskState?.maxPerTradeRiskPct
+        || 1;
+    const riskBudgetInr = capInr * configuredRiskPct / 100;
 
     if (!canonical || ltp <= 0 || !Number.isFinite(slVal) || slVal <= 0 || Math.abs(ltp - slVal) === 0) {
         hintEl.textContent = "Safe Qty: Waiting for LTP/SL";
@@ -728,7 +1006,25 @@ async function unlockTerminalSuccess() {
         return;
     }
 
+    if (auth.currentUser) {
+        const [riskReady, automationReady] = await Promise.all([
+            syncServerRiskState(),
+            syncAutoTradeState()
+        ]);
+        if (!riskReady || !automationReady) {
+            isTerminalUnlocked = false;
+            checkHardKillSwitchLock();
+            return;
+        }
+    }
     isTerminalUnlocked = true;
+    if (!backendOpportunityPollTimer) {
+        backendOpportunityPollTimer = setInterval(pollBackendOpportunities, 3000);
+    }
+    if (!backendAutomationScanTimer) {
+        void runBackendAutomationScan();
+        backendAutomationScanTimer = setInterval(runBackendAutomationScan, 45000);
+    }
     document.getElementById("quickUnlockModal")?.classList.add("hidden");
     document.getElementById("setupPinModal")?.classList.add("hidden");
     document.getElementById("authKycModal")?.classList.add("hidden");
@@ -778,7 +1074,6 @@ async function unlockTerminalSuccess() {
     updateVipTrialBadgeUi();
     await refreshBrokerVaultStatus();
     await Promise.allSettled([
-        syncServerRiskState(),
         syncRealBrokerBalances(),
         initSyncPositionsToMemory(),
         syncBrokerHoldingsAndOrders(),
@@ -786,6 +1081,7 @@ async function unlockTerminalSuccess() {
         syncCoinDcxOrBinanceFeed(),
         syncAutoTradeState()
     ]);
+    checkHardKillSwitchLock();
 
     const welcomeVoice = (SESSION_VAULT.voiceLang === "bn-IN")
         ? "প্রিয় ট্রেডার, আপনার প্রো ট্রেডিং অ্যাপ আনলক হয়েছে। আজ শুধু নিয়ম মেনে ডিসিপ্লিন্ড ট্রেড হবে।"
@@ -866,7 +1162,21 @@ function dismissQuickUnlockModal() {
 
 auth.onAuthStateChanged(async (user) => {
     if (user) {
+        isTerminalUnlocked = false;
         SESSION_VAULT.userKey = user.uid;
+        const [, riskReady, autoTradeReady] = await Promise.all([
+            syncTerminalPreferences(),
+            syncServerRiskState(),
+            syncAutoTradeState()
+        ]);
+        if (!riskReady || !autoTradeReady) {
+            isTerminalUnlocked = false;
+            document.getElementById("hudUserStatusText").textContent =
+                "Server risk/kill-switch status unavailable. Trading remains blocked.";
+            return;
+        }
+        renderAutoTradeUi();
+        checkHardKillSwitchLock();
         let loadRes = await ArafCloudMaster.loadUserFromAnyDevice(false);
 
         if (loadRes.status === "ERROR" && loadRes.httpStatus === 401) {
@@ -920,7 +1230,17 @@ auth.onAuthStateChanged(async (user) => {
         }
     } else {
         isTerminalUnlocked = false;
+        serverRiskStateLoaded = false;
+        serverAutoTradeStateLoaded = false;
+        riskPnlSyncFailed = true;
         SESSION_VAULT.pinSessionToken = null;
+        if (backendOpportunityPollTimer) clearInterval(backendOpportunityPollTimer);
+        if (backendAutomationScanTimer) clearInterval(backendAutomationScanTimer);
+        backendOpportunityPollTimer = null;
+        backendAutomationScanTimer = null;
+        backendAutomationScanBusy = false;
+        OPPORTUNITY_QUEUE = [];
+        dismissOpportunityPopup();
         sessionStorage.removeItem("ARAF_PIN_SESSION");
         document.getElementById("quickUnlockModal")?.classList.add("hidden");
         document.getElementById("authKycModal")?.classList.remove("hidden");
@@ -1412,15 +1732,37 @@ async function handleSessionWipeLogout() {
     }
 }
 
-function startSplashScreen() {
+async function startSplashScreen() {
     const splash = document.getElementById("splashScreen");
-    setTimeout(() => {
-        if (splash) {
-            splash.style.transition = "opacity 500ms cubic-bezier(0.16, 1, 0.3, 1)";
-            splash.style.opacity = "0";
-            setTimeout(() => splash.remove(), 500);
-        }
-    }, 2000);
+    const status = document.getElementById("splashBackendStatus");
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4500);
+    let connected = false;
+    try {
+        const response = await fetch(`${FASTAPI_BASE_URL}/health`, {
+            method: "GET",
+            cache: "no-store",
+            signal: controller.signal
+        });
+        connected = response.ok;
+    } catch (error) {
+        connected = false;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+    if (status) {
+        status.textContent = connected
+            ? "Secure backend connected"
+            : "Backend unavailable • retrying in background";
+        status.classList.toggle("text-emerald-300", connected);
+        status.classList.toggle("text-amber-300", !connected);
+    }
+    await new Promise(resolve => setTimeout(resolve, connected ? 900 : 1800));
+    if (splash) {
+        splash.style.transition = "opacity 500ms cubic-bezier(0.16, 1, 0.3, 1)";
+        splash.style.opacity = "0";
+        setTimeout(() => splash.remove(), 500);
+    }
 }
 
 let arafChartInstance = null;
@@ -1434,6 +1776,8 @@ const CHART_TF_SECONDS = { "15s": 15, "1m": 60, "5m": 300, "15m": 900, "1h": 360
 
 function changeChartTimeframe(tf) {
     activeChartTimeframe = tf;
+    terminalPreferences.chart_timeframe = tf;
+    void saveTerminalPreferences();
     ["15s", "1m", "5m", "15m", "1h", "1d"].forEach(t => {
         const btn = document.getElementById(`tfBtn_${t}`);
         if (btn) btn.className = t === tf
@@ -1454,8 +1798,11 @@ async function searchAndLoadInAppChart() {
         initTradingViewChart(`${exchPrefix}:${pair}`, "");
         return;
     }
-    const res = await fetch(`${CLOUDFLARE_GATEWAY}?target=search_stock&q=${encodeURIComponent(raw)}`);
-    const data = await res.json().catch(() => null);
+    const res = await secureApiCall("search_stock", {
+        method: "GET",
+        query: `q=${encodeURIComponent(raw)}`
+    });
+    const data = res.ok ? res.data : null;
     if (data?.success && Array.isArray(data.items) && data.items.length > 0) {
         const hit = data.items[0];
         initTradingViewChart(`${hit.exchange}:${hit.orderKey}`, hit.yahooSymbol);
@@ -1569,8 +1916,11 @@ async function initTradingViewChart(symbolName, yahooOverride = "") {
                 });
                 j = sRes.data;
             } else {
-                const r = await fetch(`${CLOUDFLARE_GATEWAY}?target=historical_candles&symbol=${encodeURIComponent(rawSym)}&yahooSymbol=${encodeURIComponent(activeChartYahooSymbol)}&timeframe=${apiTf}&range=${rangeMap[apiTf] || "5d"}`);
-                j = await r.json().catch(() => null);
+                const r = await secureApiCall("historical_candles", {
+                    method: "GET",
+                    query: `symbol=${encodeURIComponent(rawSym)}&yahooSymbol=${encodeURIComponent(activeChartYahooSymbol)}&timeframe=${apiTf}&range=${rangeMap[apiTf] || "5d"}`
+                });
+                j = r.ok ? r.data : null;
             }
             if (j?.success && Array.isArray(j.candles)) {
                 if (activeChartTimeframe === "15s") {
@@ -1723,8 +2073,11 @@ async function loadRealHistoricalCandles(assetId) {
                 });
                 data = sRes.data;
             } else {
-                const res = await fetch(`${CLOUDFLARE_GATEWAY}?target=historical_candles&symbol=${encodeURIComponent(asset.orderKey)}&timeframe=15m&range=5d`);
-                if (res.ok) data = await res.json();
+                const res = await secureApiCall("historical_candles", {
+                    method: "GET",
+                    query: `symbol=${encodeURIComponent(asset.orderKey)}&timeframe=15m&range=5d`
+                });
+                if (res.ok) data = res.data;
             }
             if (data && Array.isArray(data.candles)) {
                 bars = data.candles.map(c => ({ ...c, isClosed: true, source: data.source || "YAHOO_DELAYED" }));
@@ -2080,9 +2433,9 @@ async function fetchMasterOrPublicIndianFeed() {
 
     // Shoonya NOT connected -> fetch Indian market data from Yahoo Finance
     try {
-        const res = await fetch(`${CLOUDFLARE_GATEWAY}?target=public_market_feed`);
+        const res = await secureApiCall("public_market_feed", { method: "GET" });
         if (!res.ok) return;
-        const data = await res.json();
+        const data = res.data;
         if (data && data.success) {
             if (data.vix?.price) {
                 liveIndiaVix = data.vix.price;
@@ -2960,36 +3313,25 @@ function playOpportunitySonarBeep(side = "BUY") {
 let OPPORTUNITY_QUEUE = [];
 let oppPopupCountdownSec = 15;
 let oppPopupIntervalId = null;
-let oppPopupPaused = false;
 let oppPopupPinnedAfterOrder = false;
+let backendOpportunityPollTimer = null;
+let backendAutomationScanTimer = null;
+let backendAutomationScanBusy = false;
 
 function enqueueOpportunities(list) {
-    const now = Date.now();
     const existingKeys = new Set(OPPORTUNITY_QUEUE.map(x => x.orderKey));
     if (SESSION_VAULT.currentOppData?.orderKey) existingKeys.add(SESSION_VAULT.currentOppData.orderKey);
     const mapped = list
-        .filter(x => !existingKeys.has(x.orderKey))
+        .filter(x => x?.id && x?.expiresAt && x?.bengaliReason
+            && x.executionEligible === true && Number(x.fusionScore) >= 70
+            && !existingKeys.has(x.orderKey))
         .map(x => ({
-        isDemoTest: false,
-        assetId: x.id,
-        symbol: x.symbol,
-        orderKey: x.orderKey,
-        exchange: x.exchange,
-        type: x.opp.optionHint || x.opp.direction,
-        side: x.opp.direction,
-        calibratedProbPct: x.opp.calibratedProbPct,
-        sampleCount: x.opp.sampleCount,
-        horizonBars: x.opp.horizonBars,
-        modelVersion: x.opp.modelVersion,
-        ciText: x.opp.ciText,
-        rrRatio: x.opp.rrRatio,
-        reason: (x.opp.reasons || []).join(" • "),
-        entry: x.opp.entry,
-        sl: x.opp.sl,
-        target: x.opp.target,
-        freshness: x.dataQuality || "DELAYED",
-        createdAt: now,
-        expiresAt: now + 90000
+            ...x,
+            isDemoTest: false,
+            type: `${x.tierLabel || "Opportunity"} • ${x.side} • ${x.fusionScore}/100`,
+            calibratedProbPct: x.fusionScore,
+            reason: x.bengaliReason,
+            freshness: "SERVER VERIFIED"
     }));
 
     OPPORTUNITY_QUEUE = [
@@ -3005,13 +3347,7 @@ function enqueueOpportunities(list) {
 function isOpportunityValid(opp) {
     if (!opp) return false;
     if (opp.isDemoTest) return true;
-    if (Date.now() > (opp.expiresAt || 0)) return false;
-    const live = DYNAMIC_SCAN_CACHE.find(x => x.symbol === opp.symbol) || MASTER_ASSETS.find(a => a.orderKey === opp.orderKey);
-    const ltp = Number(live?.priceNum || live?.price || opp.entry);
-    const driftPct = opp.entry > 0 ? Math.abs((ltp - opp.entry) / opp.entry) * 100 : 0;
-    if (driftPct > 1.25) return false;
-    if (live?.dataQuality === "OFFLINE" || live?.dataQuality === "STALE") return false;
-    return true;
+    return Boolean(opp.id && Date.parse(opp.expiresAt) > Date.now());
 }
 
 function showNextOpportunityFromQueue() {
@@ -3031,22 +3367,14 @@ function advanceOpportunityQueue() {
     showNextOpportunityFromQueue();
 }
 
-function pauseOpportunityPopupTimer() {
-    oppPopupPaused = true;
-    const badge = document.getElementById("oppPopupTimerBadge");
-    if (badge) badge.textContent = `⏸ ${oppPopupCountdownSec}s (PAUSED)`;
-}
-
-function resumeOpportunityPopupTimer() {
-    const qtyEl = document.getElementById("oppPopupQtyInput");
-    if (document.activeElement === qtyEl) return;
-    oppPopupPaused = false;
-}
-
 function updateOppPopupRiskPreview() {
     const opp = SESSION_VAULT.currentOppData;
     const prevEl = document.getElementById("oppPopupRiskPreview");
     if (!opp || !prevEl) return;
+    if (Number.isFinite(Number(opp.riskInr))) {
+        prevEl.textContent = `R:R ${opp.rrRatio || "--"} • ₹${Math.round(Number(opp.riskInr)).toLocaleString("en-IN")}`;
+        return;
+    }
     const qty = Number(document.getElementById("oppPopupQtyInput")?.value || 0);
     const isCrypto = opp.orderKey.endsWith("USDT");
     const fx = isCrypto ? (FX_RATE_STATE.usdToInr || 86) : 1;
@@ -3063,13 +3391,25 @@ function triggerOpportunityAlert(data) {
     document.getElementById("oppPopupQueueBadge").textContent = `QUEUE: 1/${OPPORTUNITY_QUEUE.length + 1}`;
     document.getElementById("oppPopupProbBadge").textContent = data.isDemoTest
         ? "DEMO SIMULATION"
-        : `CALIBRATED ${data.calibratedProbPct}%`;
+        : `FUSION ${data.calibratedProbPct}%`;
     document.getElementById("oppPopupConfluenceBadge").textContent = `${data.freshness || "LIVE"} • ${data.exchange || ""}`;
     document.getElementById("oppPopupTitle").textContent = `${data.symbol}: ${data.type}`;
-    document.getElementById("oppPopupSubtitle").textContent = data.reason || "Calibrated setup ready";
+    document.getElementById("oppPopupSubtitle").textContent = data.bengaliReason || data.reason || "সার্ভার যাচাইকৃত সুযোগ";
+    const assetClass = data.category === "crypto"
+        ? "CRYPTO FUTURES (PAPER)"
+        : data.optionType
+            ? `${data.exchange} OPTION`
+            : `${data.exchange} EQUITY`;
+    document.getElementById("oppPopupAssetClass").textContent = assetClass;
+    document.getElementById("oppPopupDirection").textContent = data.optionType
+        ? `${data.direction} • ${data.optionType}`
+        : data.side;
+    document.getElementById("oppPopupStrike").textContent = data.strike
+        ? `${data.strike} • ${data.expiry || ""}`
+        : "--";
     document.getElementById("oppPopupProbNote").textContent = data.isDemoTest
         ? "DEMO TEST ONLY — Execution Blocked"
-        : `Model: ${data.modelVersion} • N=${data.sampleCount} (${data.ciText}) • Horizon: ${data.horizonBars}x15m`;
+        : `${Number(data.fusionScore || 0) >= 70 ? "Server-validated manual opportunity" : "তথ্যভিত্তিক সতর্কতা; ট্রেড স্কোর ৭০-এর নিচে"} • Auto-trade requires 90+ • ${data.mode || "PAPER"} • Expires in 15 seconds${data.autoTradeState ? ` • Auto: ${data.autoTradeState}` : ""}`;
 
     document.getElementById("oppPopupEntry").textContent = data.entry;
     document.getElementById("oppPopupSL").textContent = data.sl;
@@ -3078,37 +3418,43 @@ function triggerOpportunityAlert(data) {
     const canonical = resolveCanonicalInstrument(data.orderKey);
     const qtyEl = document.getElementById("oppPopupQtyInput");
     if (qtyEl) {
-        qtyEl.value = String(canonical?.lotSize || 1);
+        qtyEl.value = String(data.quantity || canonical?.lotSize || 1);
         qtyEl.step = String(canonical?.lotSize || 1);
         qtyEl.min = String(canonical?.lotSize || 0.0001);
+        qtyEl.disabled = !data.isDemoTest;
     }
     updateOppPopupRiskPreview();
 
-    const evRisk = evaluateNewsEventRiskFilter({ keywords: [data.orderKey.toLowerCase()] });
     const evEl = document.getElementById("oppPopupEventNote");
-    if (evEl) evEl.textContent = `Event Risk: ${evRisk.riskLevel}`;
+    if (evEl) evEl.textContent = data.serverGatesPassed ? "Server engines/news/risk gates: PASS" : "Server gates pending";
 
     const execBtn = document.getElementById("btnExecuteOpp");
     if (execBtn) {
         if (data.isDemoTest) {
+            execBtn.disabled = true;
             execBtn.className = "w-full bg-slate-200 text-slate-700 font-bold py-3 rounded-xl text-xs";
             execBtn.innerHTML = `<i class="fa-solid fa-ban mr-1"></i> <span>Demo Alert (Non-Tradable)</span>`;
+        } else if (data.executionEligible !== true || Number(data.fusionScore || 0) < 70) {
+            execBtn.disabled = true;
+            execBtn.className = "w-full bg-slate-200 text-slate-500 font-bold py-3 rounded-xl text-xs cursor-not-allowed";
+            execBtn.innerHTML = `<i class="fa-solid fa-circle-info mr-1"></i> <span>তথ্যভিত্তিক • ম্যানুয়াল ট্রেডের জন্য ৭০+ প্রয়োজন</span>`;
         } else {
+            execBtn.disabled = false;
             execBtn.className = isBuy ? "w-full groww-btn-green py-3 rounded-xl text-xs font-bold" : "w-full groww-btn-red py-3 rounded-xl text-xs font-black";
-            execBtn.innerHTML = `<i class="fa-solid fa-bolt mr-1"></i> <span>One-Click ${LIVE_AUTO_TRADING_ENABLED ? "LIVE" : "PAPER"} ${data.side} (${data.orderKey})</span>`;
+            execBtn.innerHTML = `<i class="fa-solid fa-bolt mr-1"></i> <span>EXECUTE 1-CLICK (PAPER)</span>`;
         }
     }
 
     oppPopupCountdownSec = 15;
-    oppPopupPaused = false;
     oppPopupPinnedAfterOrder = false;
     if (oppPopupIntervalId) clearInterval(oppPopupIntervalId);
     const timerBadge = document.getElementById("oppPopupTimerBadge");
     if (timerBadge) timerBadge.textContent = `⏱ ${oppPopupCountdownSec}s`;
 
     oppPopupIntervalId = setInterval(() => {
-        if (oppPopupPaused || oppPopupPinnedAfterOrder) return;
-        oppPopupCountdownSec--;
+        if (oppPopupPinnedAfterOrder) return;
+        const remainingMs = Date.parse(data.expiresAt) - Date.now();
+        oppPopupCountdownSec = Math.max(0, Math.ceil(remainingMs / 1000));
         if (timerBadge) timerBadge.textContent = `⏱ ${oppPopupCountdownSec}s`;
         if (oppPopupCountdownSec <= 0) {
             advanceOpportunityQueue();
@@ -3128,6 +3474,7 @@ async function testOpportunityAlert() {
     const sr = calculateDynamicSupportResistance(asset.high, asset.low, asset.priceNum);
     triggerOpportunityAlert({
         isDemoTest: true,
+        expiresAt: new Date(Date.now() + 15000).toISOString(),
         assetId: asset.id,
         symbol: `${asset.name} [TEST]`,
         orderKey: asset.orderKey,
@@ -3150,20 +3497,24 @@ function repeatOpportunityVoice() {
 }
 function dismissOpportunityPopup() {
     if (oppPopupIntervalId) clearInterval(oppPopupIntervalId);
-    oppPopupPaused = false;
     oppPopupPinnedAfterOrder = false;
     document.getElementById("opportunityPopupModal")?.classList.add("hidden");
+    SESSION_VAULT.currentOppData = null;
     stopAiVoice();
 }
 function dismissOpportunityToast() { document.getElementById("liveOpportunityToast")?.classList.add("hidden"); }
 function scrollToCurrentOpportunityCard() { dismissOpportunityToast(); document.getElementById("opportunityPopupModal")?.classList.remove("hidden"); }
 
-function executeOpportunityTradeNow() {
+async function executeOpportunityTradeNow() {
     const opp = SESSION_VAULT.currentOppData;
     if (!opp) return;
     if (opp.isDemoTest) {
         alert("This is a DEMO SIMULATION alert. Live/paper order routing is disabled for demo tests.");
         dismissOpportunityPopup();
+        return;
+    }
+    if (opp.executionEligible !== true || Number(opp.fusionScore || 0) < 70) {
+        alert("এই সতর্কতাটি তথ্যভিত্তিক। অর্ডারের জন্য সার্ভার-যাচাইকৃত ৮০+ কনফ্লুয়েন্স প্রয়োজন।");
         return;
     }
     if (!isOpportunityValid(opp)) {
@@ -3172,53 +3523,28 @@ function executeOpportunityTradeNow() {
         return;
     }
 
-    const canonical = resolveCanonicalInstrument(opp.orderKey);
-    if (!canonical) { alert(`Blocked: Unmapped symbol ${opp.orderKey}`); return; }
-
-    const userQty = Number(document.getElementById("oppPopupQtyInput")?.value);
-    if (!Number.isFinite(userQty) || userQty <= 0) {
-        alert("Enter a valid positive Quantity!");
-        return;
-    }
-
-    const capInr = Number(SESSION_VAULT.serverRiskState?.capitalInr) || 100000;
-    const fx = opp.orderKey.endsWith("USDT") ? (FX_RATE_STATE.usdToInr || 86) : 1;
-    const estRiskInr = Math.abs(Number(opp.entry) - Number(opp.sl)) * userQty * fx;
-    if (estRiskInr > capInr * 0.02) {
-        alert(`Blocked: Risk ₹${Math.round(estRiskInr)} exceeds 2% per-trade cap (₹${Math.round(capInr * 0.02)}). Reduce Quantity.`);
-        return;
-    }
-
-    const side = (opp.side === "SELL" || opp.side === "SHORT") ? "SELL" : "BUY";
-    const mode = LIVE_AUTO_TRADING_ENABLED ? "LIVE" : "PAPER";
-    const ok = confirm(`[${mode} ONE-CLICK AUTHORIZATION]\nAsset: ${opp.symbol}\nSide: ${side} | Qty: ${userQty}\nAuto SL: ${opp.sl} | Auto Target: ${opp.target}\n— Authorize Order?`);
-    if (!ok) return;
-
     oppPopupPinnedAfterOrder = true;
     if (oppPopupIntervalId) clearInterval(oppPopupIntervalId);
-    switchTab("Trade");
-    const symSelect = document.getElementById("tradeOrderSymbol");
-    if (symSelect) {
-        if (!Array.from(symSelect.options).some(o => o.value === opp.orderKey)) {
-            const opt = document.createElement("option");
-            opt.value = opp.orderKey;
-            opt.textContent = `${opp.orderKey} (${opp.exchange || canonical.exchange})`;
-            symSelect.appendChild(opt);
-        }
-        symSelect.value = opp.orderKey;
-        updateVaultStatusBadges();
+    const response = await fastApiRequest(`/automation/opportunities/${encodeURIComponent(opp.id)}/claim`, {
+        method: "POST",
+        body: {}
+    });
+    if (!response.ok || !response.data?.success) {
+        oppPopupPinnedAfterOrder = false;
+        alert(response.data?.detail?.code === "OPPORTUNITY_EXPIRED_OR_CLAIMED"
+            ? "এই সুযোগটির ১৫ সেকেন্ডের মেয়াদ শেষ হয়েছে।"
+            : response.data?.detail || "Paper trade could not be submitted.");
+        advanceOpportunityQueue();
+        return;
     }
-    const deskQty = document.getElementById("tradeOrderQty");
-    if (deskQty) deskQty.value = String(userQty);
-
-    dispatchLiveBrokerTrade(side, opp.orderKey, userQty, { operationType: "ENTRY", slPrice: Number(opp.sl), mode });
+    alert(`Paper order accepted: ${opp.symbol} • Qty ${opp.quantity}`);
+    dismissOpportunityPopup();
 }
 
 let DYNAMIC_SCAN_CACHE = [];
 let SCANNER_UNIVERSE_COUNT = 0;
 let lastScannerRunTs = 0;
 let isDeepScanRunning = false;
-const VOICE_ALERT_COOLDOWN_MAP = {};
 let DEEP_SCAN_ROTATION_CURSOR = { indian: 0, crypto: 0 };
 const DEEP_ANALYZED_SYMBOLS_SET = new Set();
 let SCANNER_COVERAGE = {
@@ -3410,8 +3736,11 @@ async function fetchQuickCandlesForScanner(item) {
             });
             j = sRes.data;
         } else {
-            const r = await fetch(`${CLOUDFLARE_GATEWAY}?target=historical_candles&symbol=${encodeURIComponent(item.orderKey)}&yahooSymbol=${encodeURIComponent(ySym)}&timeframe=15m&range=5d`);
-            j = await r.json().catch(() => null);
+            const r = await secureApiCall("historical_candles", {
+                method: "GET",
+                query: `symbol=${encodeURIComponent(item.orderKey)}&yahooSymbol=${encodeURIComponent(ySym)}&timeframe=15m&range=5d`
+            });
+            j = r.ok ? r.data : null;
         }
         if (!j?.success || !Array.isArray(j.candles)) return [];
         const currentBucketStart = Math.floor(nowMs / 900000) * 900000;
@@ -3461,7 +3790,10 @@ async function runFullMarketDiamondScan(isManual = false) {
         const prevOppMap = new Map(DYNAMIC_SCAN_CACHE.filter(x => x.opp).map(x => [x.symbol, x.opp]));
 
         const [indP1Res, binRes] = await Promise.allSettled([
-            fetch(`${CLOUDFLARE_GATEWAY}?target=deep_scanner&eligibleOnly=1&page=1&pageSize=500`).then(r => r.ok ? r.json() : null).catch(() => null),
+            secureApiCall("deep_scanner", {
+                method: "GET",
+                query: "eligibleOnly=1&page=1&pageSize=500"
+            }).then(r => r.ok ? r.data : null).catch(() => null),
             fetch("https://api.binance.com/api/v3/ticker/24hr").then(r => r.ok ? r.json() : null).catch(() => null)
         ]);
 
@@ -3506,7 +3838,10 @@ async function runFullMarketDiamondScan(isManual = false) {
             if (totalPages > 1) {
                 const extraCalls = [];
                 for (let p = 2; p <= totalPages; p++) {
-                    extraCalls.push(fetch(`${CLOUDFLARE_GATEWAY}?target=deep_scanner&eligibleOnly=1&page=${p}&pageSize=500`).then(r => r.ok ? r.json() : null).catch(() => null));
+                    extraCalls.push(secureApiCall("deep_scanner", {
+                        method: "GET",
+                        query: `eligibleOnly=1&page=${p}&pageSize=500`
+                    }).then(r => r.ok ? r.data : null).catch(() => null));
                 }
                 const extraRes = await Promise.allSettled(extraCalls);
                 extraRes.forEach(r => {
@@ -3670,9 +4005,6 @@ async function runFullMarketDiamondScan(isManual = false) {
                         corr: scanCorr,
                         walkFwd: item.wf
                     });
-                    if (window.AUTO_TRADE_STATE?.enabled && item.fusionReport?.autoTradeEligible && isTerminalUnlocked) {
-                        executeAutoTradeFromEngineReport(item.fusionReport);
-                    }
                 }
                 DEEP_ANALYZED_SYMBOLS_SET.add(item.symbol);
             }));
@@ -3698,32 +4030,6 @@ async function runFullMarketDiamondScan(isManual = false) {
         SCANNER_UNIVERSE_COUNT = SCANNER_COVERAGE.baselineScanned;
         lastScannerRunTs = Date.now();
         updateUniverseCoverageDashboard();
-
-        const calibratedDiamonds = DYNAMIC_SCAN_CACHE
-                .filter(x => x.opp &&
-                    x.opp.calibratedProbPct !== null &&
-                    x.opp.calibratedProbPct >= 70 &&
-                    x.opp.score >= 90 &&
-                    x.dataQuality !== "OFFLINE" &&
-                    x.dataQuality !== "STALE" &&
-                    x.dataQuality !== "CLOSED_SESSION" &&
-                    (x.opp.direction === "BUY" || x.opp.direction === "SELL"))
-            .sort((a, b) => (b.opp.calibratedProbPct - a.opp.calibratedProbPct) || (b.opp.score - a.opp.score));
-
-        if (calibratedDiamonds.length > 0 && isTerminalUnlocked) {
-            enqueueOpportunities(calibratedDiamonds);
-            const top = calibratedDiamonds[0];
-            const now = Date.now();
-            const lastSpoken = VOICE_ALERT_COOLDOWN_MAP[top.symbol] || 0;
-            if (now - lastSpoken > 300000 || isManual) {
-                VOICE_ALERT_COOLDOWN_MAP[top.symbol] = now;
-                playOpportunitySonarBeep(top.opp.direction);
-                const msg = (SESSION_VAULT.voiceLang === "bn-IN")
-                    ? `${top.name}-এ ${top.opp.calibratedProbPct} শতাংশ ক্যালিব্রেটেড ${top.opp.optionHint} সুযোগ! এন্ট্রি ${top.opp.entry}, স্টপ লস ${top.opp.sl}, টার্গেট ${top.opp.target}।`
-                    : `${top.opp.calibratedProbPct} percent calibrated ${top.opp.optionHint} setup on ${top.name}. Entry ${top.opp.entry}, SL ${top.opp.sl}, Target ${top.opp.target}.`;
-                explainTextFriendly(msg, `${top.symbol} ${top.opp.calibratedProbPct}%`);
-            }
-        }
 
         if (!GLOBAL_SEARCH_STATE.query) renderDynamicScanner();
     } finally {
@@ -3855,9 +4161,11 @@ async function executeGlobalCatalogueSearch() {
     if (newsText) newsText.textContent = `Searching full NSE/BSE/Crypto/F&O catalogue for "${rawInput || GLOBAL_SEARCH_STATE.exchange}"...`;
 
     try {
-        const qs = `target=search_stock&q=${encodeURIComponent(rawInput)}&exchange=${encodeURIComponent(GLOBAL_SEARCH_STATE.exchange)}&page=${GLOBAL_SEARCH_STATE.page}&pageSize=${GLOBAL_SEARCH_STATE.pageSize}`;
-        const res = await fetch(`${CLOUDFLARE_GATEWAY}?${qs}`);
-        const data = await res.json().catch(() => null);
+        const res = await secureApiCall("search_stock", {
+            method: "GET",
+            query: `q=${encodeURIComponent(rawInput)}&exchange=${encodeURIComponent(GLOBAL_SEARCH_STATE.exchange)}&page=${GLOBAL_SEARCH_STATE.page}&pageSize=${GLOBAL_SEARCH_STATE.pageSize}`
+        });
+        const data = res.ok ? res.data : null;
         if (!data?.success) throw new Error("Search unavailable");
 
         GLOBAL_SEARCH_STATE.totalMatches = Number(data.totalMatches || 0);
@@ -3932,10 +4240,12 @@ async function openSearchedAssetDetailModal(item) {
     if (title) title.textContent = item.name || item.orderKey;
     if (subtitle) subtitle.textContent = `${item.symbol || item.orderKey} • ${item.exchange || ""}`;
 
-    const qs = `target=asset_details&symbol=${encodeURIComponent(item.symbol || item.orderKey)}&name=${encodeURIComponent(item.name || item.orderKey)}&yahooSymbol=${encodeURIComponent(item.yahooSymbol || "")}&category=${encodeURIComponent(item.category || "")}`;
     try {
-        const res = await fetch(`${CLOUDFLARE_GATEWAY}?${qs}`);
-        const data = await res.json().catch(() => null);
+        const res = await secureApiCall("asset_details", {
+            method: "GET",
+            query: `symbol=${encodeURIComponent(item.symbol || item.orderKey)}&name=${encodeURIComponent(item.name || item.orderKey)}&yahooSymbol=${encodeURIComponent(item.yahooSymbol || "")}&category=${encodeURIComponent(item.category || "")}`
+        });
+        const data = res.ok ? res.data : null;
         const d = data?.details || {};
         const setText = (id, value) => {
             const el = document.getElementById(id);
@@ -4041,14 +4351,14 @@ function renderDynamicScanner(customList = null) {
     let list = [];
     if (activeCategory === "opportunities" || activeCategory === "all") {
         list = sourcePool
-            .filter(x => x.opp && x.opp.score >= 70 && (x.opp.direction === "BUY" || x.opp.direction === "SELL"))
+            .filter(x => x.opp && x.opp.score >= 80 && (x.opp.direction === "BUY" || x.opp.direction === "SELL"))
             .sort((a, b) => b.opp.score - a.opp.score);
 
         if (list.length === 0) {
             container.innerHTML = `<div class="groww-card p-6 text-center space-y-2 border border-[#00d09c]/30 bg-white">
                 <div class="w-12 h-12 rounded-2xl bg-[#00d09c]/10 text-[#00d09c] flex items-center justify-center mx-auto text-xl"><i class="fa-solid fa-shield-halved"></i></div>
-                <h4 class="text-xs font-black text-slate-900 heading-font">No ≥70% Diamond Opportunity Yet</h4>
-                <p class="text-[10px] text-slate-600 leading-relaxed">Scanned ${SCANNER_UNIVERSE_COUNT || sourcePool.length} Stocks, Indices &amp; Crypto pairs using 100+ Candlestick &amp; Quant engines. Sub-70% noisy setups are hidden to protect your capital!</p>
+                <h4 class="text-xs font-black text-slate-900 heading-font">No ≥80% Diamond Opportunity Yet</h4>
+                <p class="text-[10px] text-slate-600 leading-relaxed">Scanned ${SCANNER_UNIVERSE_COUNT || sourcePool.length} Stocks, Indices &amp; Crypto pairs using 100+ Candlestick &amp; Quant engines. Sub-80% setups are hidden to protect your capital.</p>
                 <button onclick="runFullMarketDiamondScan(true)" class="groww-btn-green px-4 py-2 rounded-xl text-[10px] font-black shadow-md active:scale-95 transition">Re-Scan Universe Now</button>
             </div>`;
             return;
@@ -4079,7 +4389,7 @@ function renderDynamicScanner(customList = null) {
 
     container.innerHTML = headerStrip + list.map(a => {
         const opp = a.opp || null;
-        const hasStrongOpp = opp && opp.score >= 70 && (opp.direction === "BUY" || opp.direction === "SELL");
+        const hasStrongOpp = opp && opp.score >= 80 && (opp.direction === "BUY" || opp.direction === "SELL");
         const isBuy = hasStrongOpp ? opp.direction === "BUY" : a.changePct >= 0;
         const cardPulse = hasStrongOpp ? (isBuy ? "radar-blink-buy border-2 border-[#00d09c]" : "radar-blink-sell border-2 border-[#eb5b3c]") : "";
         const rvolTxt = (a.rvol !== null && a.rvol !== undefined) ? `RVOL ${a.rvol}x` : "RVOL N/A";
@@ -4422,7 +4732,83 @@ function renderOpenPositions() {
     });
 }
 
-async function exitOpenPosition(posId) {
+function renderPaperAutomationPositions() {
+    const container = document.getElementById("paperAutomationPositionsList");
+    if (!container) return;
+    container.innerHTML = "";
+    const positions = SESSION_VAULT.paperAutomationPositions.filter(position => position.status === "OPEN");
+    if (!positions.length) {
+        const empty = document.createElement("p");
+        empty.className = "text-[9px] text-slate-500 font-mono text-center py-2";
+        empty.textContent = "No open auto-trade paper positions.";
+        container.appendChild(empty);
+        return;
+    }
+    positions.forEach(position => {
+        const row = document.createElement("div");
+        row.className = "flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-[10px] mono-font";
+        const label = document.createElement("span");
+        label.className = "text-slate-700";
+        label.textContent = `${position.isAutoTrade ? "AUTO" : "PAPER"} ${position.side} ${position.symbol} • ${position.quantity} @ ${position.entry}`;
+        const exit = document.createElement("button");
+        exit.type = "button";
+        exit.className = "px-2.5 py-1.5 rounded-lg bg-[#eb5b3c] text-white font-black text-[9px]";
+        exit.textContent = "FAST EXIT";
+        exit.addEventListener("click", () => fastExitPaperPosition(position.id));
+        row.append(label, exit);
+        container.appendChild(row);
+    });
+}
+
+async function syncAutomationPaperPositions() {
+    if (!auth.currentUser) return;
+    const res = await fastApiRequest("/automation/positions");
+    if (!res.ok || !Array.isArray(res.data?.positions)) {
+        console.error("Could not load persisted paper positions", res.data?.detail || res.status);
+        return;
+    }
+    SESSION_VAULT.paperAutomationPositions = res.data.positions;
+    renderPaperAutomationPositions();
+}
+
+async function fastExitPaperPosition(positionId, skipConfirmation = false) {
+    const position = SESSION_VAULT.paperAutomationPositions.find(item => item.id === positionId);
+    if (!position || position.status !== "OPEN") return;
+    if (!skipConfirmation && !confirm(`FAST EXIT\n\nClose ${position.side} ${position.symbol} paper position now?`)) return;
+    const res = await fastApiRequest(`/automation/positions/${encodeURIComponent(positionId)}/exit`, {
+        method: "POST"
+    });
+    if (!res.ok || !res.data?.success) {
+        alert(res.data?.detail || "Paper-position fast exit failed.");
+        return;
+    }
+    await Promise.allSettled([syncAutomationPaperPositions(), syncServerRiskState()]);
+}
+
+async function panicExitAllPositions() {
+    const positions = [];
+    const seen = new Set();
+    Object.values(SESSION_VAULT.fastPositionsMap).forEach(position => {
+        if (position && Number(position.qty) !== 0 && !seen.has(position.id)) {
+            seen.add(position.id);
+            positions.push(position);
+        }
+    });
+    const paperPositions = SESSION_VAULT.paperAutomationPositions.filter(position => position.status === "OPEN");
+    if (!positions.length && !paperPositions.length) {
+        alert("No open positions were found.");
+        return;
+    }
+    if (!confirm(`KILL ALL / PANIC EXIT\n\nAttempt fast exit for ${positions.length + paperPositions.length} open position(s)?`)) return;
+    for (const position of positions) {
+        await exitOpenPosition(position.id, true);
+    }
+    for (const position of paperPositions) {
+        await fastExitPaperPosition(position.id, true);
+    }
+}
+
+async function exitOpenPosition(posId, skipConfirmation = false) {
     if (isOrderDispatching) return;
     const pos = SESSION_VAULT.fastPositionsMap[posId];
     if (!pos || Number(pos.qty) === 0) return;
@@ -4433,8 +4819,10 @@ async function exitOpenPosition(posId) {
     const exitQty = Math.abs(pos.qty);
     const mode = LIVE_AUTO_TRADING_ENABLED ? "LIVE" : "PAPER";
 
-    const ok = confirm(`[PROTECTED FAST EXIT (E84)]\n1. Cancel pending SL/TP orders\n2. Re-read net position & close remaining qty\n3. Verify net position = 0\n\nAsset: ${orderKey} (${pos.broker})\nSide: ${exitSide} | Qty: ${exitQty}\n— Confirm Fast Exit?`);
-    if (!ok) return;
+    if (!skipConfirmation) {
+        const ok = confirm(`[PROTECTED FAST EXIT (E84)]\n1. Cancel pending SL/TP orders\n2. Re-read net position & close remaining qty\n3. Verify net position = 0\n\nAsset: ${orderKey} (${pos.broker})\nSide: ${exitSide} | Qty: ${exitQty}\n— Confirm Fast Exit?`);
+        if (!ok) return;
+    }
 
     isOrderDispatching = true;
     const statusBox = document.getElementById("orderStatusMsg");
@@ -4486,6 +4874,7 @@ async function initSyncPositionsToMemory() {
         });
     }
     renderOpenPositions();
+    await syncAutomationPaperPositions();
 }
 
 function evaluateMillisecondMtmOnTick(tokenOrSymbol, liveLtp) {
@@ -4525,13 +4914,12 @@ function evaluateMillisecondMtmOnTick(tokenOrSymbol, liveLtp) {
     SESSION_VAULT.dailyLossPnl = totalPnlInr;
 
     const activeLim = getActiveDailyLossLimitInr();
+    if (seen.size > 0 && !fxMissingForCrypto) {
+        syncDailyPnlToServer(totalPnlInr, totalPnlInr <= activeLim);
+    }
     if (seen.size > 0 && !fxMissingForCrypto && totalPnlInr <= activeLim && !SESSION_VAULT.serverRiskState?.isHardLocked) {
         SESSION_VAULT.serverRiskState.isHardLocked = true;
         applyHardLockUi(totalPnlInr);
-        if (!isPnlBreachSyncInFlight && auth.currentUser) {
-            isPnlBreachSyncInFlight = true;
-            secureApiCall("sync_daily_pnl", { method: "POST" }).finally(() => { isPnlBreachSyncInFlight = false; });
-        }
     }
 
     const now = performance.now();
@@ -4633,7 +5021,10 @@ function dispatchManualDeskOrder(side) {
     calculateSafeQtySuggestion();
 
     const capInr = Number(SESSION_VAULT.serverRiskState?.capitalInr) || Number(document.getElementById("riskCapitalInput")?.value) || 100000;
-    const maxTradeRiskInr = capInr * 0.02;
+    const requestedRiskPct = Number(document.getElementById("riskPerTradePctInput")?.value || 1);
+    const hardRiskPct = Number(SESSION_VAULT.serverRiskState?.maxPerTradeRiskPct || 2);
+    const effectiveRiskPct = Math.min(requestedRiskPct, hardRiskPct);
+    const maxTradeRiskInr = capInr * effectiveRiskPct / 100;
     let estRiskInr = Math.abs(ltp - finalSl) * qty;
     if (canonical.broker === "COINDCX") {
         if (!FX_RATE_STATE.usdToInr) {
@@ -4643,7 +5034,7 @@ function dispatchManualDeskOrder(side) {
         estRiskInr = estRiskInr * FX_RATE_STATE.usdToInr;
     }
     if (estRiskInr > maxTradeRiskInr) {
-        alert(`Quantity Risk Cap Exceeded!\nEstimated SL Risk: ₹${Math.round(estRiskInr).toLocaleString("en-IN")}\nMax Allowed Per-Trade Risk (2%): ₹${Math.round(maxTradeRiskInr).toLocaleString("en-IN")}\nPlease reduce Quantity.`);
+        alert(`Quantity Risk Cap Exceeded!\nEstimated SL Risk: ₹${Math.round(estRiskInr).toLocaleString("en-IN")}\nMax Allowed Per-Trade Risk (${effectiveRiskPct}%): ₹${Math.round(maxTradeRiskInr).toLocaleString("en-IN")}\nPlease reduce Quantity.`);
         return;
     }
 
@@ -4654,7 +5045,7 @@ function dispatchManualDeskOrder(side) {
         `Side: ${side} | Qty: ${qty}\n` +
         `Protective Stop-Loss: ${finalSl}\n` +
         `Broker: ${canonical.broker}\n\n` +
-        `⚠️ Confirm real order dispatch?`
+        `This action is a paper simulation; no broker order will be sent.\n\nConfirm?`
     );
     if (!confirmed) return;
 
@@ -4669,12 +5060,7 @@ async function dispatchLiveBrokerTrade(side, overrideSymbol = null, overrideQty 
 
     try {
         const opType = orderContext?.operationType === "EXIT" ? "EXIT" : "ENTRY";
-        const mode = orderContext?.mode || (LIVE_AUTO_TRADING_ENABLED ? "LIVE" : "PAPER");
-
-        if (mode !== "PAPER" && mode !== "LIVE") {
-            if (statusBox) statusBox.textContent = "Invalid trading mode";
-            return;
-        }
+        const mode = "PAPER";
 
         if (opType === "ENTRY") {
             if (!isTerminalUnlocked || !SESSION_VAULT.pinSessionToken) {
@@ -4720,41 +5106,82 @@ async function dispatchLiveBrokerTrade(side, overrideSymbol = null, overrideQty 
        const arrivalPrice = asset?.priceNum || asset?.price || 0;
         const clientOrderId = `ORD_${Date.now()}_${crypto.getRandomValues(new Uint32Array(1))[0]}`;
 
-        const res = await secureApiCall("place_order", {
-            method: "POST",
-            headers: { "X-Client-Order-Id": clientOrderId },
-            jsonBody: {
-                symbol: rawSymbol,
+        if (opType === "ENTRY") {
+            const response = await fastApiRequest("/automation/opportunities");
+            const opportunity = response.ok
+                ? (response.data?.opportunities || []).find(item =>
+                    item.orderKey === rawSymbol &&
+                    item.side === side &&
+                    item.executionEligible === true &&
+                    Number(item.fusionScore) >= 70
+                )
+                : null;
+            if (!opportunity) {
+                if (statusBox) statusBox.textContent = "Blocked: no unexpired server-validated 70+ opportunity for this instrument and direction.";
+                return;
+            }
+            if (!confirm(`[SERVER-VALIDATED PAPER TRADE]\n${opportunity.symbol} ${opportunity.side} • Qty ${opportunity.quantity}\nEntry ${opportunity.entry} • SL ${opportunity.sl} • TP ${opportunity.target} • R:R ${opportunity.rrRatio}\nProceed?`)) return;
+            const claimed = await fastApiRequest(`/automation/opportunities/${encodeURIComponent(opportunity.id)}/claim`, {
+                method: "POST",
+                body: {}
+            });
+            if (!claimed.ok || !claimed.data?.success) {
+                const detail = claimed.data?.detail;
+                if (statusBox) statusBox.textContent = typeof detail === "string" ? detail : (detail?.code || "Server opportunity could not be claimed.");
+                return;
+            }
+            const order = claimed.data.order;
+            if (order?.risk) applyRiskStateToUi(order.risk);
+            recordAndSyncTradeLog(
+                rawSymbol,
                 side,
-                qty,
-                leverage: canonical.broker === "COINDCX" ? selectedCryptoLeverage : 1,
-                slPrice: orderContext?.slPrice ? Number(orderContext.slPrice) : null,
-                operationType: opType,
-                mode
+                opportunity.quantity,
+                canonical.broker,
+                order?.state || "PAPER_FILLED",
+                order?.client_order_id || opportunity.id
+            );
+            if (statusBox) statusBox.textContent = `${order?.state || "PAPER_FILLED"} (PAPER) • Server size ${opportunity.quantity} • R:R ${opportunity.rrRatio}`;
+            return;
+        }
+
+        const res = await fastApiRequest("/orders/place", {
+            method: "POST",
+            body: {
+                symbol: rawSymbol,
+                exchange: canonical.exchange,
+                side,
+                quantity: qty,
+                operation: opType,
+                mode,
+                entry_price: opType === "ENTRY" ? arrivalPrice : null,
+                stop_loss: opType === "ENTRY" && orderContext?.slPrice ? Number(orderContext.slPrice) : null,
+                take_profit: null,
+                client_order_id: clientOrderId
             }
         });
 
         if (res.ok && res.data?.success) {
             if (res.data.risk) applyRiskStateToUi(res.data.risk);
             const orderState = res.data.state || "ACCEPTED";
+            const orderId = res.data.broker_order_id || res.data.client_order_id || clientOrderId;
             if (statusBox) {
                 statusBox.className = "p-2 rounded-xl text-[10px] mono-font font-bold bg-[#00d09c]/15 border border-[#00d09c]/40 text-[#059669] block";
-                statusBox.textContent = `${orderState} (${res.data.mode}) • ID: ${res.data.brokerOrderId || clientOrderId} • Protection: ${res.data.protectionStatus || "-"}`;
+                statusBox.textContent = `${orderState} (${res.data.mode}) • ID: ${orderId} • Protection: ${res.data.protection_status || "-"}`;
             }
-            recordAndSyncTradeLog(rawSymbol, side, qty, canonical.broker, orderState, res.data.brokerOrderId || clientOrderId);
+            recordAndSyncTradeLog(rawSymbol, side, qty, canonical.broker, orderState, orderId);
             if (orderState === "PAPER_FILLED") {
                 recordExecutionQualityMetric({ symbol: rawSymbol, arrivalPrice, fillPrice: arrivalPrice, status: "PAPER_FILLED" });
             }
 
-            if (res.data.mode === "LIVE" && res.data.brokerOrderId) {
-                setTimeout(() => reconcileBrokerTradeStatus(res.data.brokerOrderId, canonical.broker, rawSymbol, clientOrderId, arrivalPrice, 1), 1500);
-            }
         } else {
             if (res.data?.risk) applyRiskStateToUi(res.data.risk);
             recordExecutionQualityMetric({ symbol: rawSymbol, arrivalPrice, fillPrice: null, status: "REJECTED" });
             if (statusBox) {
                 statusBox.className = "p-2 rounded-xl text-[10px] mono-font font-bold bg-[#eb5b3c]/15 border border-[#eb5b3c]/40 text-[#eb5b3c] block";
-                statusBox.textContent = res.data?.reason || res.data?.message || res.data?.error || "Order Rejected";
+                const detail = res.data?.detail;
+                statusBox.textContent = typeof detail === "string"
+                    ? detail
+                    : detail?.reason || detail?.message || detail?.code || res.data?.message || "Order Rejected";
             }
         }
     } catch (err) {
@@ -5698,6 +6125,8 @@ function switchNewsTabCategory(cat) {
 
 function toggleNewsVoiceDigest() {
     newsVoiceDigestEnabled = !newsVoiceDigestEnabled;
+    terminalPreferences.news_voice_digest_enabled = newsVoiceDigestEnabled;
+    void saveTerminalPreferences();
     const btn = document.getElementById("btnNewsVoiceToggle");
     if (btn) btn.innerHTML = `<i class="fa-solid ${newsVoiceDigestEnabled ? "fa-volume-high" : "fa-volume-xmark"}"></i> Voice: ${newsVoiceDigestEnabled ? "ON" : "OFF"}`;
     if (!newsVoiceDigestEnabled) stopAiVoice();
@@ -5729,6 +6158,8 @@ async function translateClientSideFallback(text, targetLang) {
 
 async function setNewsDigestLanguage(langCode) {
     SESSION_VAULT.newsLang = langCode;
+    terminalPreferences.news_lang = langCode;
+    void saveTerminalPreferences();
     const shortMap = { "en-US": "en", "bn-IN": "bn", "hi-IN": "hi", "gu-IN": "gu", "mr-IN": "mr", "ta-IN": "ta" };
     Object.entries(shortMap).forEach(([full, s]) => {
         const btn = document.getElementById(`btnNewsLang_${s}`);
@@ -5763,7 +6194,7 @@ async function fetchRealFinancialNews() {
     const badgeEl = document.getElementById("newsFilterCountBadge");
     if (listEl) listEl.innerHTML = `<div class="groww-card p-4 text-center text-slate-500 font-mono text-[10px]">Fetching verified catalyst wire...</div>`;
 
-    const res = await secureApiCall("news_feed", { method: "GET" });
+    const res = await fastApiRequest("/news/feed");
     if (res.ok && res.data?.success && Array.isArray(res.data.items)) {
         allFetchedNewsItems = res.data.items;
         newsFetchState = "LOADED";
@@ -5913,8 +6344,6 @@ window.AUTO_TRADE_STATE = {
 };
 let activeIpoNewsLang = "bn";
 let autoTradeExecutionLog = [];
-const AUTO_TRADE_COOLDOWN_MAP = {};
-let isAutoTradeExecuting = false;
 
 function switchIpoAutoSubTab(sub) {
     const isIpo = sub === "ipo";
@@ -5937,25 +6366,40 @@ function updateAutoTradeRouteBadge() {
 
 function renderAutoTradeUi() {
     const st = window.AUTO_TRADE_STATE || {};
-    const on = st.enabled === true;
+    const riskLocked = !serverRiskStateLoaded
+        || riskPnlSyncFailed
+        || SESSION_VAULT.serverRiskState?.isHardLocked === true;
+    const configured = st.enabled === true
+        && st.globalEnabled === true
+        && st.globalKillSwitch !== true
+        && !riskLocked;
+    const gated = configured && st.paperLifecycleReady !== true;
+    const on = configured && st.paperLifecycleReady === true;
     const topPill = document.getElementById("autoTradeTopPill");
     const badge = document.getElementById("autoTradeSwitchStatusBadge");
     const btnOn = document.getElementById("btnAutoTradeOn");
     const btnOff = document.getElementById("btnAutoTradeOff");
 
     if (topPill) {
-        topPill.textContent = on ? "AUTO: ON" : "AUTO: OFF";
+        topPill.textContent = riskLocked ? "AUTO: RISK LOCKED" : on ? "AUTO: ON" : gated ? "AUTO: GATED" : "AUTO: OFF";
         topPill.className = on
             ? "text-[8px] bg-[#00d09c] text-white font-mono px-2 py-0.5 rounded font-black"
+            : gated
+                ? "text-[8px] bg-amber-100 text-amber-700 font-mono px-2 py-0.5 rounded font-bold border border-amber-300"
             : "text-[8px] bg-slate-100 text-slate-600 font-mono px-2 py-0.5 rounded font-bold border border-slate-200";
     }
     if (badge) {
-        badge.textContent = on ? "ON (ACTIVE)" : "OFF";
+        badge.textContent = on ? "ON (ACTIVE)" : gated ? "ON (LIFECYCLE BLOCKED)" : "OFF";
         badge.className = on
             ? "px-2.5 py-1 rounded-lg bg-[#00d09c]/15 text-[#059669] font-mono font-black text-[10px]"
+            : gated
+                ? "px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 font-mono font-black text-[10px]"
             : "px-2.5 py-1 rounded-lg bg-[#eb5b3c]/15 text-[#eb5b3c] font-mono font-black text-[10px]";
     }
-    if (btnOn) btnOn.className = on ? "py-2.5 rounded-xl groww-btn-green text-white shadow-md transition active:scale-95" : "py-2.5 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95";
+    if (btnOn) {
+        btnOn.disabled = riskLocked || st.globalKillSwitch === true || !serverAutoTradeStateLoaded;
+        btnOn.className = on ? "py-2.5 rounded-xl groww-btn-green text-white shadow-md transition active:scale-95" : "py-2.5 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95";
+    }
     if (btnOff) btnOff.className = !on ? "py-2.5 rounded-xl bg-[#eb5b3c] text-white shadow-md transition active:scale-95" : "py-2.5 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95";
 
     const budget = Number(st.dailyBudgetInr || 10000);
@@ -5996,27 +6440,87 @@ function renderAutoTradeUi() {
 }
 
 async function syncAutoTradeState() {
-    if (!auth.currentUser) return;
-    const res = await secureApiCall("get_auto_trade_state", { method: "GET" });
-    if (res.ok && res.data?.autoTrade) {
-        window.AUTO_TRADE_STATE = res.data.autoTrade;
+    if (!auth.currentUser) return false;
+    try {
+        const res = await fastApiRequest("/automation/settings");
+        if (!res.ok || !res.data?.automation) {
+            throw new Error(res.data?.detail || `Automation status request failed (${res.status})`);
+        }
+        window.AUTO_TRADE_STATE = res.data.automation;
+        serverAutoTradeStateLoaded = true;
         renderAutoTradeUi();
+        await pollBackendOpportunities();
+        return true;
+    } catch (error) {
+        serverAutoTradeStateLoaded = false;
+        window.AUTO_TRADE_STATE = {
+            ...window.AUTO_TRADE_STATE,
+            enabled: false,
+            globalEnabled: false,
+            globalKillSwitch: true
+        };
+        console.error("Authoritative server kill-switch state could not be loaded", error);
+        renderAutoTradeUi();
+        return false;
+    }
+}
+
+async function pollBackendOpportunities() {
+    if (!auth.currentUser || !isTerminalUnlocked) return;
+    const res = await fastApiRequest("/automation/opportunities");
+    if (res.ok && Array.isArray(res.data?.opportunities)) {
+        enqueueOpportunities(res.data.opportunities);
+    }
+}
+
+async function runBackendAutomationScan() {
+    if (!auth.currentUser || !isTerminalUnlocked || document.hidden || backendAutomationScanBusy) return;
+    backendAutomationScanBusy = true;
+    try {
+        const scope = window.AUTO_TRADE_STATE?.allowedMarkets || "ALL";
+        const markets = scope === "ALL" ? ["CRYPTO", "INDIA"] : [scope];
+        const responses = await Promise.all(markets.map(market => fastApiRequest("/automation/scan", {
+            method: "POST",
+            body: { market, timeframe: "15m", limit: 10 },
+            timeoutMs: 30000
+        })));
+        const opportunities = [];
+        responses.forEach((response, index) => {
+            if (response.ok && Array.isArray(response.data?.opportunities)) {
+                opportunities.push(...response.data.opportunities);
+            } else if (!response.ok) {
+                console.warn(`[Automation Scan:${markets[index]}] Server scan unavailable:`, response.data?.detail || response.status);
+            }
+        });
+        enqueueOpportunities(opportunities);
+    } finally {
+        backendAutomationScanBusy = false;
     }
 }
 
 async function toggleAutoTradeSwitch(enableBool) {
     if (!checkProAccess()) return;
-    if (enableBool && !confirm("Enable Auto Trading?\n\nRequirements:\n1. Score >= 90/100 and 100% Engine PASS.\n2. Entry is allowed only on LIVE verified data.\n3. Daily Balance Limit must not be exceeded.")) return;
+    if (enableBool && (
+        !serverRiskStateLoaded
+        || riskPnlSyncFailed
+        || !serverAutoTradeStateLoaded
+        || SESSION_VAULT.serverRiskState?.isHardLocked === true
+        || window.AUTO_TRADE_STATE?.globalKillSwitch === true
+    )) {
+        alert("Server risk or kill-switch state blocks auto-trading.");
+        return;
+    }
+    if (enableBool && !confirm("Enable paper auto-trading?\n\nOnly server-validated opportunities scoring at least 90/100 can be considered. 70–89 scores remain manual alerts. Live broker execution remains disabled. Automatic entries remain gated until paper-position lifecycle management is ready.")) return;
 
-    const res = await secureApiCall("set_auto_trade_config", {
-        method: "POST",
-        jsonBody: { enabled: enableBool }
+    const res = await fastApiRequest("/automation/settings", {
+        method: "PUT",
+        body: { enabled: enableBool }
     });
-    if (res.ok && res.data?.autoTrade) {
-        window.AUTO_TRADE_STATE = res.data.autoTrade;
+    if (res.ok && res.data?.automation) {
+        window.AUTO_TRADE_STATE = { ...window.AUTO_TRADE_STATE, ...res.data.automation };
         renderAutoTradeUi();
     } else {
-        alert(res.data?.error || "Failed to update Auto Trade switch.");
+        alert(res.data?.detail || "Failed to update Auto Trade switch.");
     }
 }
 
@@ -6028,77 +6532,16 @@ async function saveAutoTradeBudgetConfig() {
         alert("Minimum Daily Auto Trade Limit is ₹1,000!");
         return;
     }
-    const res = await secureApiCall("set_auto_trade_config", {
-        method: "POST",
-        jsonBody: { dailyBudgetInr, allowedMarkets }
+    const res = await fastApiRequest("/automation/settings", {
+        method: "PUT",
+        body: { daily_budget_inr: dailyBudgetInr, allowed_markets: allowedMarkets }
     });
-    if (res.ok && res.data?.autoTrade) {
-        window.AUTO_TRADE_STATE = res.data.autoTrade;
+    if (res.ok && res.data?.automation) {
+        window.AUTO_TRADE_STATE = { ...window.AUTO_TRADE_STATE, ...res.data.automation };
         renderAutoTradeUi();
-        alert(`✅ Daily Auto Limit Locked: ₹${Math.round(res.data.autoTrade.dailyBudgetInr).toLocaleString("en-IN")} (${allowedMarkets})`);
+        alert(`✅ Daily Auto Limit Locked: ₹${Math.round(res.data.automation.dailyBudgetInr).toLocaleString("en-IN")} (${allowedMarkets})`);
     } else {
-        alert(res.data?.error || "Failed to lock Auto Trade budget.");
-    }
-}
-
-async function executeAutoTradeFromEngineReport(report) {
-    if (!report || !report.autoTradeEligible || !window.AUTO_TRADE_STATE?.enabled) return;
-    if (isAutoTradeExecuting || !isTerminalUnlocked || !SESSION_VAULT.pinSessionToken) return;
-    if (checkHardKillSwitchLock()) return;
-
-    const now = Date.now();
-    const lastTs = AUTO_TRADE_COOLDOWN_MAP[report.orderKey] || 0;
-    if (now - lastTs < 180000) return;
-
-    const sizing = report.sizing;
-    if (!sizing || !sizing.qty || sizing.qty <= 0 || !report.sl || !report.target) return;
-
-    isAutoTradeExecuting = true;
-    AUTO_TRADE_COOLDOWN_MAP[report.orderKey] = now;
-    const clientOrderId = `AUTO_${Date.now()}_${crypto.getRandomValues(new Uint32Array(1))[0]}`;
-    const mode = LIVE_AUTO_TRADING_ENABLED ? "LIVE" : "PAPER";
-
-    try {
-        const res = await secureApiCall("execute_auto_trade", {
-            method: "POST",
-            headers: { "X-Client-Order-Id": clientOrderId },
-            jsonBody: {
-                symbol: report.orderKey,
-                exchange: report.symbol.split(":")[0] || "NSE",
-                assetCategory: report.category,
-                side: report.side,
-                qty: sizing.qty,
-                slPrice: report.sl,
-                tpPrice: report.target,
-                requiredInr: sizing.requiredInr,
-                score: report.fusionScore,
-                allRequiredEnginesPass: report.allRequiredPass,
-                dataQuality: report.isLiveVerified ? "LIVE" : "DELAYED",
-                leverage: 1,
-                mode
-            }
-        });
-
-        if (res.ok && res.data?.success) {
-            autoTradeExecutionLog.unshift({
-                symbol: report.orderKey, side: report.side, qty: sizing.qty,
-                score: report.fusionScore, sl: report.sl, tp: report.target,
-                status: res.data.state || "AUTO_FILLED", ok: true
-            });
-            recordAndSyncTradeLog(report.orderKey, report.side, sizing.qty, "AUTO_TRADE", res.data.state, res.data.brokerOrderId || clientOrderId);
-            explainTextFriendly(`Auto Trade executed on ${report.orderKey}.`, "Auto Trade Executed");
-            await Promise.allSettled([syncAutoTradeState(), syncServerRiskState(), syncRealBrokerBalances(), initSyncPositionsToMemory()]);
-        } else {
-            autoTradeExecutionLog.unshift({
-                symbol: report.orderKey, side: report.side, qty: sizing.qty,
-                score: report.fusionScore, sl: report.sl, tp: report.target,
-                status: res.data?.code || "BLOCKED", ok: false
-            });
-        }
-        autoTradeExecutionLog = autoTradeExecutionLog.slice(0, 20);
-        renderAutoTradeUi();
-    } finally {
-        isAutoTradeExecuting = false;
+        alert(res.data?.detail || "Failed to lock Auto Trade budget.");
     }
 }
 
@@ -6246,7 +6689,9 @@ async function installPwaApp() {
 }
 
 function bootArafTerminal() {
-    startSplashScreen();
+    loadLocalTerminalPreferences();
+    loadLocalRiskConfig();
+    void startSplashScreen();
 
     try {
         if ("serviceWorker" in navigator) {
@@ -6268,6 +6713,12 @@ function bootArafTerminal() {
         MASTER_ASSETS.forEach(a => loadRealHistoricalCandles(a.id));
         setTimeout(() => runFullMarketDiamondScan(false), 1800);
         setInterval(() => { if (!document.hidden) runFullMarketDiamondScan(false); }, 45000);
+        setInterval(() => {
+            const newsPane = document.getElementById("newsFeedList")?.closest("main");
+            if (!document.hidden && auth.currentUser && newsPane && !newsPane.classList.contains("hidden")) {
+                fetchRealFinancialNews();
+            }
+        }, 30000);
 
         if (marketPollIntervalId) clearInterval(marketPollIntervalId);
         marketPollIntervalId = setInterval(() => {

@@ -111,7 +111,7 @@ def test_live_trading_setting_is_locked_off():
     assert Settings(_env_file=None, live_trading_enabled=True).live_trading_enabled is False
 
 
-def test_paper_order_is_idempotent_and_never_uses_broker():
+def test_paper_entry_fails_closed_without_position_persistence():
     app = FastAPI()
     app.include_router(orders.router)
     app.state.redis = _DisabledRedis()
@@ -133,14 +133,6 @@ def test_paper_order_is_idempotent_and_never_uses_broker():
     }
     with TestClient(app) as client:
         first = client.post("/orders/place", json=payload)
-        retry = client.post("/orders/place", json=payload)
-        conflict = client.post(
-            "/orders/place",
-            json={**payload, "quantity": 2},
-        )
 
-    assert first.status_code == 200
-    assert first.json()["mode"] == "PAPER"
-    assert first.json()["persistence_degraded"] is True
-    assert retry.json()["client_order_id"] == first.json()["client_order_id"]
-    assert conflict.status_code == 409
+    assert first.status_code == 503
+    assert first.json()["detail"]["code"] == "PAPER_POSITION_PERSISTENCE_UNAVAILABLE"

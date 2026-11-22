@@ -1,5 +1,7 @@
 .env
+firebase-key.json
 .venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+LEGACY_JS_BACKUP/

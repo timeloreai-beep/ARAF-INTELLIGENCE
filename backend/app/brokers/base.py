@@ -12,6 +12,8 @@ class BrokerQuote:
     low: float
     volume: float = 0
     source: str = "UNKNOWN"
+    bid: float | None = None
+    ask: float | None = None
 
 
 @dataclass

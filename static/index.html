@@ -33,6 +33,7 @@
 
 <div id="splashScreen" class="fixed inset-0 z-[9999] flex items-center justify-center bg-[#0d1017] text-white overflow-hidden select-none p-0 md:p-6">  
     <img id="splashFounderImg" src="https://i.ibb.co/WvKJbzb0/file-000000004c2082079db37621e6f181e3.png" referrerpolicy="no-referrer" alt="ARAF Founder" class="w-full h-full object-cover object-top md:w-auto md:max-h-[88vh] md:object-contain md:rounded-2xl md:border md:border-[#00d09c]/30 md:shadow-2xl select-none" />
+    <div id="splashBackendStatus" class="absolute bottom-7 rounded-full bg-slate-950/75 px-4 py-2 text-[10px] font-mono text-white">Connecting to secure backend…</div>
 </div>  
 
 <div id="quickUnlockModal" class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-md flex items-center justify-center p-4 hidden">
@@ -406,7 +407,7 @@
 </div>  
 
 <div id="opportunityPopupModal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
-    <div onmouseenter="pauseOpportunityPopupTimer()" onmouseleave="resumeOpportunityPopupTimer()" class="groww-card border border-[#00d09c]/40 w-full max-w-md p-4 space-y-3 shadow-2xl opportunity-glow relative text-center bg-white">
+    <div class="groww-card border border-[#00d09c]/40 w-full max-w-md p-4 space-y-3 shadow-2xl opportunity-glow relative text-center bg-white">
         <button type="button" onclick="dismissOpportunityPopup()" aria-label="Close opportunity" title="Close" class="absolute top-2 right-2 w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center transition"><i class="fa-solid fa-xmark text-sm"></i></button>
         <div class="flex items-center justify-between text-[9px] font-mono">
             <span id="oppPopupQueueBadge" class="bg-slate-100 text-slate-700 px-2 py-0.5 rounded border border-slate-200 font-bold">QUEUE: 1/1</span>
@@ -414,8 +415,13 @@
         </div>
         <div>
             <div class="flex items-center justify-center space-x-2">
-                <span id="oppPopupProbBadge" class="text-[8.5px] bg-[#00d09c] text-white font-mono font-black px-2 py-0.5 rounded shadow-sm">CALIBRATED ≥70%</span>
+                <span id="oppPopupProbBadge" class="text-[8.5px] bg-[#00d09c] text-white font-mono font-black px-2 py-0.5 rounded shadow-sm">CONFLUENCE ≥80%</span>
                 <span id="oppPopupConfluenceBadge" class="text-[8.5px] bg-slate-100 text-slate-700 font-mono font-bold px-2 py-0.5 rounded border border-slate-200">FRESH</span>
+            </div>
+            <div class="grid grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-[9px] mono-font">
+                <div><span class="text-slate-500 block text-[8px] uppercase font-bold">Asset class</span><b id="oppPopupAssetClass" class="text-slate-900">--</b></div>
+                <div><span class="text-slate-500 block text-[8px] uppercase font-bold">Direction</span><b id="oppPopupDirection" class="text-slate-900">--</b></div>
+                <div><span class="text-slate-500 block text-[8px] uppercase font-bold">Strike / Expiry</span><b id="oppPopupStrike" class="text-slate-900">--</b></div>
             </div>
             <h2 id="oppPopupTitle" class="text-base font-black text-slate-900 mt-1 heading-font">SETUP DETECTED</h2>
             <p id="oppPopupSubtitle" class="text-[10.5px] text-slate-600 font-medium mt-0.5">Orderbook &amp; regime setup detected.</p>
@@ -428,8 +434,8 @@
         </div>
         <div class="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-left mono-font text-[9.5px]">
             <div>
-                <label class="text-[8px] text-slate-500 uppercase font-bold block mb-0.5">Your Quantity Only</label>
-                <input type="number" step="any" id="oppPopupQtyInput" onfocus="pauseOpportunityPopupTimer()" oninput="updateOppPopupRiskPreview()" class="w-full bg-white border border-[#00d09c]/50 rounded-lg px-2 py-1 text-xs font-black text-slate-900 focus:outline-none">
+                <label class="text-[8px] text-slate-500 uppercase font-bold block mb-0.5">Server-Sized Quantity</label>
+                <input type="number" step="any" id="oppPopupQtyInput" readonly class="w-full bg-white border border-[#00d09c]/50 rounded-lg px-2 py-1 text-xs font-black text-slate-900 focus:outline-none">
             </div>
             <div class="flex flex-col justify-center text-right">
                 <span class="text-[8px] text-slate-500 uppercase font-bold">Net R:R &amp; Risk</span>
@@ -439,7 +445,7 @@
         </div>
         <div class="space-y-2 pt-0.5">
             <button onclick="executeOpportunityTradeNow()" id="btnExecuteOpp" class="w-full groww-btn-green py-3 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-2">
-                <i class="fa-solid fa-bolt text-sm"></i> <span>One-Click Authorize &amp; Trade</span>
+                <i class="fa-solid fa-bolt text-sm"></i> <span>EXECUTE 1-CLICK (PAPER)</span>
             </button>
             <div class="grid grid-cols-3 gap-1.5">
                 <button type="button" onclick="repeatOpportunityVoice()" class="bg-slate-100 hover:bg-slate-200 text-[#00d09c] font-bold py-2 rounded-xl text-[9.5px] transition border border-slate-200"><i class="fa-solid fa-volume-high mr-1"></i> Replay</button>
@@ -727,10 +733,16 @@
         <div id="positionSubContent_open" class="space-y-2">
             <div class="flex items-center justify-between pb-1">
                 <h4 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-layer-group text-[#00d09c] mr-1.5"></i> Open Positions &amp; Fast Exit</h4>
-                <span class="text-[8px] bg-[#00d09c]/10 text-[#059669] font-mono font-bold px-1.5 py-0.5 rounded border border-[#00d09c]/30">PROTECTED EXIT</span>
+                <button type="button" onclick="panicExitAllPositions()" class="text-[8px] bg-[#eb5b3c] text-white font-mono font-black px-2 py-1 rounded border border-rose-600">KILL ALL / PANIC EXIT</button>
             </div>
             <div id="openPositionsList" class="space-y-1.5">
                 <p class="text-[9px] text-slate-500 font-mono text-center py-2">No active open positions.</p>
+            </div>
+            <div class="border-t border-slate-200 pt-2">
+                <h5 class="text-[10px] font-black text-slate-700 mb-1">Paper positions</h5>
+                <div id="paperAutomationPositionsList" class="space-y-1.5">
+                    <p class="text-[9px] text-slate-500 font-mono text-center py-2">No open auto-trade paper positions.</p>
+                </div>
             </div>
         </div>
 
@@ -757,33 +769,28 @@
                 <span class="text-slate-600 font-bold">CAPITAL &amp; DAILY RISK GUARD</span>
                 <span id="riskLimitDisplayBadge" class="text-amber-600 font-black">Limit: -₹2,500</span>
             </div>
-            <div class="grid grid-cols-3 gap-1.5">
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                 <div>
                     <label class="text-[8px] text-slate-500 block">Capital (₹)</label>
                     <input type="number" id="riskCapitalInput" min="5000" value="100000" oninput="calculateSafeQtySuggestion()" class="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-900 font-bold">
                 </div>
                 <div>
-                    <label class="text-[8px] text-slate-500 block">Daily Loss %</label>
-                    <select id="riskLossPctSelect" class="w-full bg-white border border-slate-200 rounded-lg px-1.5 py-1 text-slate-900 font-bold">
-                        <option value="1">1%</option>
-                        <option value="2">2%</option>
-                        <option value="2.5" selected>2.5%</option>
-                        <option value="3">3%</option>
-                        <option value="5">5%</option>
-                    </select>
+                    <label class="text-[8px] text-slate-500 block">Daily Loss Limit (₹)</label>
+                    <input type="number" id="riskMaxDailyLossAmount" min="1" max="100000000" step="1" value="2500" oninput="calculateSafeQtySuggestion()" class="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-900 font-bold">
+                </div>
+                <div>
+                    <label class="text-[8px] text-slate-500 block">Per-Trade Risk %</label>
+                    <input type="number" id="riskPerTradePctInput" min="0.1" max="2" step="0.1" value="1" oninput="calculateSafeQtySuggestion()" class="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-900 font-bold">
                 </div>
                 <div>
                     <label class="text-[8px] text-slate-500 block">Max Trades</label>
-                    <select id="riskMaxTradesSelect" class="w-full bg-white border border-slate-200 rounded-lg px-1.5 py-1 text-slate-900 font-bold">
-                        <option value="3" selected>3</option>
-                        <option value="5">5</option>
-                        <option value="10">10</option>
-                    </select>
+                    <input type="number" id="riskMaxTradesSelect" min="1" max="1000" step="1" value="3" oninput="calculateSafeQtySuggestion()" class="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-900 font-bold">
                 </div>
             </div>
             <div class="flex space-x-1.5">
                 <button type="button" onclick="syncBrokerCapitalToRiskInput()" class="flex-1 bg-slate-200 text-slate-700 py-1 rounded-lg text-[9px] font-bold border border-slate-300">Use Broker Bal</button>
                 <button type="button" onclick="saveUserRiskConfig()" class="flex-1 groww-btn-green py-1 rounded-lg text-[9px] font-black">Lock Day Risk</button>
+                <p id="riskLockStatus" class="w-full text-[9px] text-slate-500 font-mono" role="status"></p>
             </div>
         </div>
         <button onclick="resetDailyKillSwitchManual()" class="w-full bg-slate-200 hover:bg-slate-300 border border-slate-300 text-slate-800 font-bold py-1.5 rounded-xl text-[10px] transition active:scale-95 flex items-center justify-center space-x-1"><i class="fa-solid fa-arrows-rotate text-[#00d09c] mr-1"></i> <span>Sync Positions &amp; Verify Server Risk Guard</span></button>
@@ -1005,6 +1012,14 @@
         <div class="flex items-center justify-between border-b border-slate-200 pb-2">
             <h3 class="text-xs font-black text-slate-900 flex items-center tracking-wide uppercase heading-font"><i class="fa-solid fa-sliders text-[#00d09c] mr-2"></i> Settings &amp; Encrypted Vault</h3>  
             <span class="text-[8px] bg-[#00d09c]/20 text-[#059669] px-2 py-0.5 rounded-full font-mono font-bold">ZERO-SECRET CLIENT</span>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 p-3 rounded-xl flex items-center justify-between">
+            <div>
+                <span class="font-bold text-slate-900 text-[11px] block">Appearance</span>
+                <span class="text-[8.5px] text-slate-500 font-mono">Theme preference syncs with your account</span>
+            </div>
+            <button type="button" id="themeToggleButton" aria-pressed="false" onclick="toggleTerminalTheme()" class="px-3 py-1.5 rounded-xl bg-slate-200 text-slate-800 font-black text-[10px]">Dark mode</button>
         </div>
 
         <div class="bg-gradient-to-br from-slate-50 to-slate-100 border border-[#00d09c]/30 rounded-2xl p-3.5 space-y-2 shadow-inner">

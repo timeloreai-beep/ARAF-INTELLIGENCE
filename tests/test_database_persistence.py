@@ -1,6 +1,9 @@
+import asyncio
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from backend.app.integrations.database import (
+    DatabaseHub,
     PersistenceStatus,
     _model_payload,
     _record_from_payload,
@@ -17,6 +20,8 @@ from backend.app.models import (
     ReplicationOutbox,
     RiskConfig,
     RiskState,
+    UserPreference,
+    AdminControl,
 )
 
 
@@ -69,6 +74,8 @@ def test_relational_models_are_registered():
         "audit_events",
         "notifications",
         "replication_outbox",
+        "user_preferences",
+        "admin_controls",
     }
 
     # Instantiate every persistence model to verify mapped constructors.
@@ -92,3 +99,41 @@ def test_relational_models_are_registered():
         aggregate_type="OrderRecord",
         aggregate_id="order-0001",
     )
+    UserPreference(user_id="subject-1", preferences={})
+    AdminControl(id="global")
+
+
+def test_daily_paper_pnl_is_aggregated_as_inr_from_persisted_positions():
+    executed = []
+
+    class Result:
+        def scalar_one(self):
+            return Decimal("-212.50")
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def execute(self, statement):
+            executed.append(str(statement))
+            return Result()
+
+    hub = object.__new__(DatabaseHub)
+    hub.sessions = lambda: Session()
+    hub.backup_sessions = None
+
+    value = asyncio.run(
+        hub.get_daily_paper_pnl_inr(
+            "pnl-user",
+            datetime(2026, 11, 22, tzinfo=timezone.utc),
+            datetime(2026, 11, 23, tzinfo=timezone.utc),
+        )
+    )
+
+    assert value == -212.5
+    assert executed
+    assert "paper_positions.realized_pnl * paper_positions.pnl_fx_to_inr" in executed[0]
+    assert "paper_positions.closed_at" in executed[0]

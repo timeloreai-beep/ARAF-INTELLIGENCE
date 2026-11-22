@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Iterable
+from datetime import datetime, timezone
+import logging
+import math
+import time
 
 import aiohttp
+
+logger = logging.getLogger(__name__)
 
 
 class UniverseScanner:
     def __init__(self, concurrency: int = 40) -> None:
         self.concurrency = concurrency
+        self._universe_cache: dict[str, tuple[float, list[dict]]] = {}
 
     async def scan_india_tradingview(self, max_items: int = 5000) -> list[dict]:
+        cache_key = f"india:{max_items}"
+        cached = self._universe_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < 60:
+            return [dict(item) for item in cached[1]]
         all_items: list[dict] = []
         async with aiohttp.ClientSession() as session:
             chunk = 500
@@ -77,9 +87,44 @@ class UniverseScanner:
                 return item
 
         results = await asyncio.gather(*(validated(item) for item in all_items))
-        return [item for item in results if item is not None]
+        universe = [item for item in results if item is not None]
+        self._universe_cache[cache_key] = (time.monotonic(), universe)
+        return [dict(item) for item in universe]
+
+    async def scan_crypto(self, limit: int = 1000) -> list[dict]:
+        cache_key = f"crypto:{limit}"
+        cached = self._universe_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < 30:
+            return [dict(item) for item in cached[1]]
+
+        providers = (
+            ("binance", self._scan_crypto_binance),
+            ("coingecko", self._scan_crypto_coingecko),
+            ("coinpaprika", self._scan_crypto_coinpaprika),
+        )
+        last_error: Exception | None = None
+        for name, fetch in providers:
+            try:
+                universe = await fetch(limit)
+            except (aiohttp.ClientError, asyncio.TimeoutError, TypeError, ValueError) as exc:
+                last_error = exc
+                logger.warning("Crypto scanner provider %s failed: %s", name, exc)
+                continue
+            if not universe:
+                logger.warning("Crypto scanner provider %s returned no usable markets", name)
+                continue
+            self._universe_cache[cache_key] = (time.monotonic(), universe)
+            return [dict(item) for item in universe]
+
+        message = "Crypto market data unavailable from Binance, CoinGecko, and Coinpaprika"
+        if last_error:
+            raise RuntimeError(message) from last_error
+        raise RuntimeError(message)
 
     async def scan_crypto_binance(self, limit: int = 1000) -> list[dict]:
+        return await self.scan_crypto(limit)
+
+    async def _scan_crypto_binance(self, limit: int) -> list[dict]:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 "https://api.binance.com/api/v3/ticker/24hr",
@@ -87,26 +132,188 @@ class UniverseScanner:
             ) as response:
                 response.raise_for_status()
                 rows = await response.json()
+        if not isinstance(rows, list):
+            raise ValueError("Binance returned an invalid crypto ticker payload")
         items = []
         for row in rows:
+            if not isinstance(row, dict):
+                continue
             symbol = str(row.get("symbol", "")).upper()
             if not symbol.endswith("USDT"):
                 continue
             if any(token in symbol for token in ("UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT")):
                 continue
-            price = float(row.get("lastPrice", 0) or 0)
-            quote_volume = float(row.get("quoteVolume", 0) or 0)
-            if price <= 0:
+            price = self._positive_number(row.get("lastPrice"))
+            if price is None:
+                continue
+            quote_volume = self._finite_number(row.get("quoteVolume"))
+            items.append({
+                "symbol": symbol,
+                "exchange": "COINDCX",
+                "price": price,
+                "high": self._positive_number(row.get("highPrice")) or price,
+                "low": self._positive_number(row.get("lowPrice")) or price,
+                "change_pct": self._finite_number(row.get("priceChangePercent")),
+                "volume": self._finite_number(row.get("volume")),
+                "turnover": quote_volume,
+                "eligible": quote_volume >= 5_000_000,
+                "data_source": "binance",
+            })
+        items.sort(key=lambda item: float(item["turnover"]), reverse=True)
+        return items[:limit]
+
+    async def _scan_crypto_coingecko(self, limit: int) -> list[dict]:
+        page_size = min(max(limit, 1), 250)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.coingecko.com/api/v3/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "order": "market_cap_desc",
+                    "per_page": page_size,
+                    "page": 1,
+                    "sparkline": "false",
+                    "price_change_percentage": "24h",
+                },
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                response.raise_for_status()
+                rows = await response.json()
+        if not isinstance(rows, list):
+            raise ValueError("CoinGecko returned an invalid crypto market payload")
+
+        items = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            base_symbol = str(row.get("symbol", "")).upper()
+            symbol = f"{base_symbol}USDT"
+            price = self._positive_number(row.get("current_price"))
+            turnover = self._positive_number(row.get("total_volume"))
+            if not base_symbol or price is None or turnover is None:
+                continue
+            if any(token in symbol for token in ("UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT")):
                 continue
             items.append({
                 "symbol": symbol,
                 "exchange": "COINDCX",
                 "price": price,
-                "high": float(row.get("highPrice", price) or price),
-                "low": float(row.get("lowPrice", price) or price),
-                "change_pct": float(row.get("priceChangePercent", 0) or 0),
-                "volume": float(row.get("volume", 0) or 0),
-                "turnover": quote_volume,
-                "eligible": quote_volume >= 5_000_000,
+                "high": self._positive_number(row.get("high_24h")) or price,
+                "low": self._positive_number(row.get("low_24h")) or price,
+                "change_pct": self._finite_number(
+                    row.get("price_change_percentage_24h")
+                ),
+                "volume": turnover / price,
+                "turnover": turnover,
+                "eligible": turnover >= 5_000_000,
+                "data_source": "coingecko",
             })
+        items.sort(key=lambda item: float(item["turnover"]), reverse=True)
         return items[:limit]
+
+    async def _scan_crypto_coinpaprika(self, limit: int) -> list[dict]:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.coinpaprika.com/v1/tickers",
+                params={"quotes": "USD"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                response.raise_for_status()
+                rows = await response.json()
+        if not isinstance(rows, list):
+            raise ValueError("Coinpaprika returned an invalid crypto ticker payload")
+
+        items = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            base_symbol = str(row.get("symbol", "")).upper()
+            symbol = f"{base_symbol}USDT"
+            quotes = row.get("quotes")
+            usd = quotes.get("USD") or {} if isinstance(quotes, dict) else {}
+            if not isinstance(usd, dict):
+                continue
+            price = self._positive_number(usd.get("price"))
+            turnover = self._positive_number(usd.get("volume_24h"))
+            if not base_symbol or price is None or turnover is None:
+                continue
+            if any(token in symbol for token in ("UPUSDT", "DOWNUSDT", "BEARUSDT", "BULLUSDT")):
+                continue
+            items.append({
+                "symbol": symbol,
+                "exchange": "COINDCX",
+                "price": price,
+                "high": price,
+                "low": price,
+                "change_pct": self._finite_number(usd.get("percent_change_24h")),
+                "volume": turnover / price,
+                "turnover": turnover,
+                "eligible": turnover >= 5_000_000,
+                "data_source": "coinpaprika",
+            })
+        items.sort(key=lambda item: float(item["turnover"]), reverse=True)
+        return items[:limit]
+
+    @staticmethod
+    def _positive_number(value) -> float | None:
+        number = UniverseScanner._finite_number(value)
+        return number if number > 0 else None
+
+    @staticmethod
+    def _finite_number(value) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return number if math.isfinite(number) else 0.0
+
+    async def get_crypto_closed_candles(
+        self,
+        symbol: str,
+        *,
+        interval: str = "15m",
+        limit: int = 120,
+    ) -> list[dict]:
+        if interval not in {"5m", "15m", "1h"}:
+            raise ValueError("Unsupported crypto candle interval")
+        symbol = symbol.upper()
+        if not symbol.endswith("USDT") or not symbol.isalnum():
+            raise ValueError("A Binance USDT symbol is required")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.binance.com/api/v3/klines",
+                params={"symbol": symbol, "interval": interval, "limit": min(max(limit, 16), 500)},
+                timeout=aiohttp.ClientTimeout(total=12),
+            ) as response:
+                response.raise_for_status()
+                rows = await response.json()
+
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        candles = []
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 7:
+                continue
+            timestamp, close_time = int(row[0]), int(row[6])
+            if close_time >= now_ms:
+                continue
+            values = [float(row[index]) for index in (1, 2, 3, 4, 5)]
+            open_price, high, low, close, volume = values
+            if (
+                not all(math.isfinite(value) for value in values)
+                or min(open_price, high, low, close) <= 0
+                or volume < 0
+                or low > min(open_price, close)
+                or high < max(open_price, close)
+            ):
+                continue
+            candles.append({
+                "time": timestamp,
+                "close_time": close_time,
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "is_closed": True,
+            })
+        return candles

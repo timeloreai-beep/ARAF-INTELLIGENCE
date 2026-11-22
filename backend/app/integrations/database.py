@@ -6,7 +6,8 @@ from typing import Any, Iterable, Sequence
 from decimal import Decimal
 import uuid
 
-from sqlalchemy import DateTime, Numeric, select, text
+from sqlalchemy import DateTime, Numeric, func, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
@@ -18,14 +19,21 @@ from sqlalchemy.ext.asyncio import (
 from ..config import get_settings
 from ..models import (
     AppUser,
+    AutoTradeDailyBudget,
+    AdminControl,
     AuditEvent,
+    AuthOtpChallenge,
+    KycRecord,
     Notification,
     OrderRecord,
+    PaperPosition,
+    PinCredential,
     Position,
     QuoteSnapshot,
     ReplicationOutbox,
     RiskConfig,
     RiskState,
+    UserPreference,
 )
 
 DATABASE_ERRORS = (SQLAlchemyError, OSError, TimeoutError)
@@ -276,15 +284,111 @@ class DatabaseHub:
 
     async def upsert_app_user(self, **values: Any) -> PersistenceStatus:
         subject = str(values.get("external_subject", values.get("id", "unknown")))
+        existing = await self.get_app_user(subject) if self.enabled else None
         values.setdefault(
             "id",
             str(uuid.uuid5(uuid.NAMESPACE_URL, f"app-user:{subject}")),
         )
+        for field_name in ("email", "display_name", "kyc_status", "trader_uid"):
+            if values.get(field_name) is None and existing:
+                values[field_name] = getattr(existing, field_name)
+        values.setdefault("kyc_status", "pending")
+        values.setdefault("trader_uid", None)
+        values.setdefault("role", existing.role if existing else "user")
+        values.setdefault("is_active", existing.is_active if existing else True)
         return await self.write_model(
             AppUser(**values),
             aggregate_type="AppUser",
             aggregate_id=subject,
         )
+
+    async def upsert_auth_otp(self, **values: Any) -> PersistenceStatus:
+        identity = f"{values['email'].lower()}:{values['purpose']}"
+        values.setdefault(
+            "id", str(uuid.uuid5(uuid.NAMESPACE_URL, f"auth-otp:{identity}"))
+        )
+        return await self.write_model(
+            AuthOtpChallenge(**values),
+            aggregate_type="AuthOtpChallenge",
+            aggregate_id=identity,
+        )
+
+    async def get_auth_otp(self, email: str, purpose: str) -> AuthOtpChallenge | None:
+        return await self._get_one(
+            AuthOtpChallenge,
+            (AuthOtpChallenge.email == email.lower())
+            & (AuthOtpChallenge.purpose == purpose),
+        )
+
+    async def delete_auth_otp(self, email: str, purpose: str) -> PersistenceStatus:
+        status = PersistenceStatus(operation="delete_auth_otp")
+        for name, sessions in (
+            ("primary", self.sessions),
+            ("backup", self.backup_sessions),
+        ):
+            if sessions is None:
+                status.errors[name] = "not_configured"
+                continue
+            try:
+                async with sessions() as session:
+                    row = await session.execute(
+                        select(AuthOtpChallenge).where(
+                            (AuthOtpChallenge.email == email.lower())
+                            & (AuthOtpChallenge.purpose == purpose)
+                        )
+                    )
+                    record = row.scalars().first()
+                    if record:
+                        await session.delete(record)
+                        await session.commit()
+                    if name == "primary":
+                        status.primary_applied = True
+                    else:
+                        status.backup_applied = True
+            except DATABASE_ERRORS as exc:
+                status.errors[name] = type(exc).__name__
+        status.replicated = status.primary_applied and status.backup_applied
+        status.partial_write = status.primary_applied != status.backup_applied
+        status.degraded = status.backup_applied and not status.primary_applied
+        self.last_status = status
+        return status
+
+    async def consume_auth_otp(self, email: str, purpose: str) -> PersistenceStatus:
+        challenge = await self.get_auth_otp(email, purpose)
+        if not challenge:
+            return PersistenceStatus(operation="consume_auth_otp")
+        return await self.upsert_auth_otp(
+            id=challenge.id,
+            email=challenge.email,
+            purpose=challenge.purpose,
+            code_hash=challenge.code_hash,
+            attempts=challenge.attempts,
+            expires_at=challenge.expires_at,
+            verified_at=challenge.verified_at,
+            consumed_at=datetime.now(timezone.utc),
+        )
+
+    async def upsert_pin_credential(self, **values: Any) -> PersistenceStatus:
+        return await self.write_model(
+            PinCredential(**values),
+            aggregate_type="PinCredential",
+            aggregate_id=str(values["user_id"]),
+        )
+
+    async def get_pin_credential(self, user_id: str) -> PinCredential | None:
+        return await self._get_one(
+            PinCredential, PinCredential.user_id == user_id
+        )
+
+    async def upsert_kyc_record(self, **values: Any) -> PersistenceStatus:
+        return await self.write_model(
+            KycRecord(**values),
+            aggregate_type="KycRecord",
+            aggregate_id=str(values["user_id"]),
+        )
+
+    async def get_kyc_record(self, user_id: str) -> KycRecord | None:
+        return await self._get_one(KycRecord, KycRecord.user_id == user_id)
 
     async def upsert_quote_snapshot(self, **values: Any) -> PersistenceStatus:
         values.setdefault("id", str(uuid.uuid4()))
@@ -325,6 +429,75 @@ class DatabaseHub:
             aggregate_id=natural_id,
         )
 
+    async def upsert_paper_entry(
+        self, *, order_values: dict[str, Any], position_values: dict[str, Any]
+    ) -> PersistenceStatus:
+        order_id = (
+            f"{order_values.get('user_id', '')}:"
+            f"{order_values.get('client_order_id', '')}"
+        )
+        order_values.setdefault(
+            "id", str(uuid.uuid5(uuid.NAMESPACE_URL, f"order:{order_id}"))
+        )
+        position_values.setdefault(
+            "id",
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"paper-position:{order_id}")),
+        )
+        order = OrderRecord(**order_values)
+        position = PaperPosition(**position_values)
+        status = PersistenceStatus(operation="paper_entry")
+        targets = (
+            ("primary", self.sessions),
+            ("backup", self.backup_sessions),
+        )
+        for name, sessions in targets:
+            if sessions is None:
+                status.errors[name] = "not_configured"
+                continue
+            try:
+                async with sessions() as session:
+                    async with session.begin():
+                        await session.merge(order)
+                        await session.merge(position)
+                if name == "primary":
+                    status.primary_applied = True
+                else:
+                    status.backup_applied = True
+            except DATABASE_ERRORS as exc:
+                status.errors[name] = type(exc).__name__
+
+        status.replicated = status.primary_applied and status.backup_applied
+        status.partial_write = status.primary_applied != status.backup_applied
+        status.degraded = status.backup_applied and not status.primary_applied
+        self.last_status = status
+        if status.partial_write:
+            applied_name = "primary" if status.primary_applied else "backup"
+            target_name = "backup" if status.primary_applied else "primary"
+            applied_sessions = self.sessions if status.primary_applied else self.backup_sessions
+            try:
+                async with applied_sessions() as session:
+                    async with session.begin():
+                        session.add_all([
+                            ReplicationOutbox(
+                                aggregate_type="OrderRecord",
+                                aggregate_id=order_id,
+                                target=target_name,
+                                status="pending",
+                                payload=_model_payload(order),
+                            ),
+                            ReplicationOutbox(
+                                aggregate_type="PaperPosition",
+                                aggregate_id=order_id,
+                                target=target_name,
+                                status="pending",
+                                payload=_model_payload(position),
+                            ),
+                        ])
+                status.outbox_queued = True
+            except DATABASE_ERRORS as exc:
+                status.errors[f"outbox_{applied_name}"] = type(exc).__name__
+        return status
+
     async def upsert_position(self, **values: Any) -> PersistenceStatus:
         natural_id = (
             f"{values.get('user_id', '')}:{values.get('symbol', '')}:"
@@ -338,6 +511,17 @@ class DatabaseHub:
             Position(**values),
             aggregate_type="Position",
             aggregate_id=natural_id,
+        )
+
+    async def upsert_paper_position(self, **values: Any) -> PersistenceStatus:
+        values.setdefault("id", str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"paper-position:{values.get('user_id', '')}:{values.get('client_order_id', '')}",
+        )))
+        return await self.write_model(
+            PaperPosition(**values),
+            aggregate_type="PaperPosition",
+            aggregate_id=f"{values.get('user_id', '')}:{values.get('client_order_id', '')}",
         )
 
     async def upsert_risk_config(self, **values: Any) -> PersistenceStatus:
@@ -359,6 +543,260 @@ class DatabaseHub:
             aggregate_id=natural_id,
         )
 
+    async def upsert_user_preferences(self, user_id: str, preferences: dict) -> PersistenceStatus:
+        return await self.write_model(
+            UserPreference(user_id=user_id, preferences=preferences),
+            aggregate_type="UserPreference",
+            aggregate_id=user_id,
+        )
+
+    async def get_user_preferences(self, user_id: str) -> UserPreference | None:
+        return await self._get_one(UserPreference, UserPreference.user_id == user_id)
+
+    async def list_automation_subjects(self, limit: int = 1000) -> list[str]:
+        bounded_limit = min(max(limit, 1), 1000)
+        preference_statement = (
+            select(UserPreference)
+            .where(UserPreference.preferences["automation"].is_not(None))
+            .order_by(UserPreference.updated_at.desc())
+            .limit(bounded_limit)
+        )
+        preferences = await self._get_many(preference_statement, UserPreference)
+        risk_statement = (
+            select(RiskConfig)
+            .order_by(RiskConfig.updated_at.desc())
+            .limit(bounded_limit)
+        )
+        risk_configs = await self._get_many(risk_statement, RiskConfig)
+        subjects = [
+            record.user_id
+            for record in preferences
+            if isinstance(record.preferences, dict)
+            and isinstance(record.preferences.get("automation"), dict)
+        ]
+        subjects.extend(record.user_id for record in risk_configs)
+        return list(dict.fromkeys(subjects))[:bounded_limit]
+
+    async def get_auto_trade_budget(self, user_id: str, trading_day: str) -> AutoTradeDailyBudget | None:
+        return await self._get_one(
+            AutoTradeDailyBudget,
+            (AutoTradeDailyBudget.user_id == user_id)
+            & (AutoTradeDailyBudget.trading_day == trading_day),
+        )
+
+    async def _queue_budget_snapshot(
+        self,
+        source_sessions: async_sessionmaker,
+        target: str,
+        user_id: str,
+        trading_day: str,
+    ) -> bool:
+        try:
+            async with source_sessions() as session:
+                async with session.begin():
+                    record = await session.get(
+                        AutoTradeDailyBudget, (user_id, trading_day)
+                    )
+                    if record is None:
+                        return False
+                    session.add(ReplicationOutbox(
+                        aggregate_type="AutoTradeDailyBudget",
+                        aggregate_id=f"{user_id}:{trading_day}",
+                        target=target,
+                        status="pending",
+                        payload=_model_payload(record),
+                    ))
+            return True
+        except DATABASE_ERRORS as exc:
+            raise RuntimeError(
+                f"Daily auto-trade budget mirror could not be queued: {type(exc).__name__}"
+            ) from exc
+
+    async def reserve_auto_trade_budget(
+        self,
+        user_id: str,
+        trading_day: str,
+        budget_inr: float,
+        amount_inr: float,
+    ) -> bool:
+        if budget_inr <= 0 or amount_inr <= 0:
+            raise ValueError("budget and reservation amounts must be positive")
+        session_targets = [
+            (name, sessions)
+            for name, sessions in (("primary", self.sessions), ("backup", self.backup_sessions))
+            if sessions is not None
+        ]
+        if not session_targets:
+            raise RuntimeError("No relational database is configured")
+        budget = Decimal(str(budget_inr))
+        amount = Decimal(str(amount_inr))
+        reserved_sessions = []
+
+        async def reserve(sessions: async_sessionmaker) -> bool:
+            async with sessions() as session:
+                async with session.begin():
+                    await session.execute(
+                        pg_insert(AutoTradeDailyBudget)
+                        .values(
+                            user_id=user_id,
+                            trading_day=trading_day,
+                            budget_inr=budget,
+                            reserved_inr=Decimal("0"),
+                            used_inr=Decimal("0"),
+                        )
+                        .on_conflict_do_nothing(index_elements=["user_id", "trading_day"])
+                    )
+                    result = await session.execute(
+                        update(AutoTradeDailyBudget)
+                        .where(
+                            (AutoTradeDailyBudget.user_id == user_id)
+                            & (AutoTradeDailyBudget.trading_day == trading_day)
+                            & (
+                                AutoTradeDailyBudget.used_inr
+                                + AutoTradeDailyBudget.reserved_inr
+                                + amount
+                                <= budget
+                            )
+                        )
+                        .values(
+                            budget_inr=budget,
+                            reserved_inr=AutoTradeDailyBudget.reserved_inr + amount,
+                        )
+                        .returning(AutoTradeDailyBudget.user_id)
+                    )
+                    return result.scalar_one_or_none() is not None
+
+        async def release(sessions: async_sessionmaker) -> None:
+            async with sessions() as session:
+                async with session.begin():
+                    await session.execute(
+                        update(AutoTradeDailyBudget)
+                        .where(
+                            (AutoTradeDailyBudget.user_id == user_id)
+                            & (AutoTradeDailyBudget.trading_day == trading_day)
+                            & (AutoTradeDailyBudget.reserved_inr >= amount)
+                        )
+                        .values(reserved_inr=AutoTradeDailyBudget.reserved_inr - amount)
+                    )
+
+        for name, sessions in session_targets:
+            try:
+                accepted = await reserve(sessions)
+            except DATABASE_ERRORS as exc:
+                rollback_error = None
+                for completed in reversed(reserved_sessions):
+                    try:
+                        await release(completed)
+                    except DATABASE_ERRORS as rollback_exc:
+                        rollback_error = type(rollback_exc).__name__
+                if rollback_error and reserved_sessions:
+                    source_sessions = reserved_sessions[0]
+                    target = "backup" if source_sessions is self.sessions else "primary"
+                    try:
+                        await self._queue_budget_snapshot(
+                            source_sessions, target, user_id, trading_day
+                        )
+                    except RuntimeError:
+                        rollback_error = f"{rollback_error};mirror_queue_failed"
+                reason = "mirror rollback failed" if rollback_error else "database error"
+                raise RuntimeError(
+                    f"Daily auto-trade budget reservation failed ({reason}: {type(exc).__name__})"
+                ) from exc
+            if not accepted:
+                rollback_error = None
+                for completed in reversed(reserved_sessions):
+                    try:
+                        await release(completed)
+                    except DATABASE_ERRORS as rollback_exc:
+                        rollback_error = type(rollback_exc).__name__
+                if rollback_error:
+                    source_sessions = reserved_sessions[0]
+                    target = "backup" if source_sessions is self.sessions else "primary"
+                    try:
+                        await self._queue_budget_snapshot(
+                            source_sessions, target, user_id, trading_day
+                        )
+                    except RuntimeError:
+                        rollback_error = f"{rollback_error};mirror_queue_failed"
+                    raise RuntimeError(
+                        f"Daily auto-trade budget mirror rollback failed: {rollback_error}"
+                    )
+                return False
+            reserved_sessions.append(sessions)
+        return True
+
+    async def settle_auto_trade_budget(
+        self,
+        user_id: str,
+        trading_day: str,
+        amount_inr: float,
+        *,
+        commit: bool,
+    ) -> bool:
+        if amount_inr <= 0:
+            raise ValueError("settlement amount must be positive")
+        session_targets = [
+            (name, sessions)
+            for name, sessions in (("primary", self.sessions), ("backup", self.backup_sessions))
+            if sessions is not None
+        ]
+        if not session_targets:
+            raise RuntimeError("No relational database is configured")
+        amount = Decimal(str(amount_inr))
+        values: dict[str, Any] = {"reserved_inr": AutoTradeDailyBudget.reserved_inr - amount}
+        if commit:
+            values["used_inr"] = AutoTradeDailyBudget.used_inr + amount
+        settled: dict[str, bool] = {}
+        errors: dict[str, str] = {}
+        for name, sessions in session_targets:
+            try:
+                async with sessions() as session:
+                    async with session.begin():
+                        result = await session.execute(
+                            update(AutoTradeDailyBudget)
+                            .where(
+                                (AutoTradeDailyBudget.user_id == user_id)
+                                & (AutoTradeDailyBudget.trading_day == trading_day)
+                                & (AutoTradeDailyBudget.reserved_inr >= amount)
+                            )
+                            .values(**values)
+                            .returning(AutoTradeDailyBudget.user_id)
+                        )
+                        settled[name] = result.scalar_one_or_none() is not None
+            except DATABASE_ERRORS as exc:
+                errors[name] = type(exc).__name__
+        if all(settled.values()) and not errors and len(settled) == len(session_targets):
+            return True
+
+        source_name = next((name for name, success in settled.items() if success), None)
+        if source_name:
+            source_sessions = self.sessions if source_name == "primary" else self.backup_sessions
+            for target_name, _ in session_targets:
+                if target_name == source_name:
+                    continue
+                try:
+                    await self._queue_budget_snapshot(
+                        source_sessions, target_name, user_id, trading_day
+                    )
+                except RuntimeError as exc:
+                    errors[f"{target_name}_outbox"] = type(exc).__name__
+        if errors:
+            raise RuntimeError(
+                f"Daily auto-trade budget settlement failed: {next(iter(errors.values()))}"
+            )
+        return False
+
+    async def upsert_admin_control(self, **values: Any) -> PersistenceStatus:
+        values.setdefault("id", "global")
+        return await self.write_model(
+            AdminControl(**values),
+            aggregate_type="AdminControl",
+            aggregate_id="global",
+        )
+
+    async def get_admin_control(self) -> AdminControl | None:
+        return await self._get_one(AdminControl, AdminControl.id == "global")
+
     async def add_audit_event(self, **values: Any) -> PersistenceStatus:
         values.setdefault("id", str(uuid.uuid4()))
         return await self.write_model(
@@ -377,6 +815,9 @@ class DatabaseHub:
 
     async def get_app_user(self, external_subject: str) -> AppUser | None:
         return await self._get_one(AppUser, AppUser.external_subject == external_subject)
+
+    async def get_app_user_by_trader_uid(self, trader_uid: str) -> AppUser | None:
+        return await self._get_one(AppUser, AppUser.trader_uid == trader_uid.upper())
 
     async def get_order(self, user_id: str, client_order_id: str) -> OrderRecord | None:
         return await self._get_one(
@@ -419,6 +860,103 @@ class DatabaseHub:
             raise RuntimeError("No relational database is configured")
         return []
 
+    async def list_open_paper_positions(self) -> list[PaperPosition]:
+        statement = select(PaperPosition).where(PaperPosition.status == "OPEN")
+        errors: dict[str, str] = {}
+        for sessions in (self.sessions, self.backup_sessions):
+            if sessions is None:
+                continue
+            try:
+                async with sessions() as session:
+                    result = await session.execute(statement)
+                    positions = list(result.scalars().all())
+                    if errors and not positions:
+                        raise RuntimeError("Paper position read used a failover database")
+                    return positions
+            except DATABASE_ERRORS as exc:
+                errors["database"] = type(exc).__name__
+        if errors:
+            raise RuntimeError(f"Paper position read failed: {next(iter(errors.values()))}")
+        if not self.enabled:
+            raise RuntimeError("No relational database is configured")
+        return []
+
+    async def list_user_paper_positions(self, user_id: str) -> list[PaperPosition]:
+        statement = (
+            select(PaperPosition)
+            .where(PaperPosition.user_id == user_id)
+            .order_by(PaperPosition.opened_at.desc())
+            .limit(200)
+        )
+        return await self._get_many(statement, PaperPosition)
+
+    async def get_daily_paper_pnl_inr(
+        self, user_id: str, start_at: datetime, end_at: datetime
+    ) -> float:
+        statement = select(
+            func.coalesce(
+                func.sum(PaperPosition.realized_pnl * PaperPosition.pnl_fx_to_inr),
+                0,
+            )
+        ).where(
+            (PaperPosition.user_id == user_id)
+            & (PaperPosition.status == "CLOSED")
+            & (PaperPosition.closed_at >= start_at)
+            & (PaperPosition.closed_at < end_at)
+        )
+        errors: dict[str, str] = {}
+        for sessions in (self.sessions, self.backup_sessions):
+            if sessions is None:
+                continue
+            try:
+                async with sessions() as session:
+                    result = await session.execute(statement)
+                    amount = result.scalar_one()
+                    if errors and not amount:
+                        raise RuntimeError("Paper P&L read used a failover database")
+                    return float(amount or 0)
+            except DATABASE_ERRORS as exc:
+                errors["database"] = type(exc).__name__
+        if errors:
+            raise RuntimeError(
+                f"Paper P&L read failed: {next(iter(errors.values()))}"
+            )
+        if not self.enabled:
+            raise RuntimeError("No relational database is configured")
+        return 0.0
+
+    async def get_user_paper_position(
+        self, user_id: str, position_id: str
+    ) -> PaperPosition | None:
+        return await self._get_one(
+            PaperPosition,
+            (PaperPosition.user_id == user_id) & (PaperPosition.id == position_id),
+        )
+
+    async def has_manual_exit_block(
+        self,
+        user_id: str,
+        symbol: str,
+        exchange: str,
+        side: str,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        current = now or datetime.now(timezone.utc)
+        statement = (
+            select(PaperPosition)
+            .where(
+                (PaperPosition.user_id == user_id)
+                & (PaperPosition.symbol == symbol)
+                & (PaperPosition.exchange == exchange)
+                & (PaperPosition.side == side)
+                & (PaperPosition.exit_reason == "MANUAL_EXIT")
+                & (PaperPosition.manual_exit_blocked_until > current)
+            )
+            .limit(1)
+        )
+        return await self._get_one(PaperPosition, statement.whereclause) is not None
+
     async def list_outbox(
         self, limit: int = 100, status: str = "pending"
     ) -> Sequence[ReplicationOutbox]:
@@ -455,14 +993,21 @@ class DatabaseHub:
             raise ValueError("outbox limit must be between 1 and 1000")
         report: dict[str, Any] = {"processed": 0, "errors": {}}
         model_types = {
+            "AdminControl": AdminControl,
             "AppUser": AppUser,
             "AuditEvent": AuditEvent,
+            "AuthOtpChallenge": AuthOtpChallenge,
+            "KycRecord": KycRecord,
             "Notification": Notification,
             "OrderRecord": OrderRecord,
+            "AutoTradeDailyBudget": AutoTradeDailyBudget,
+            "PaperPosition": PaperPosition,
+            "PinCredential": PinCredential,
             "Position": Position,
             "QuoteSnapshot": QuoteSnapshot,
             "RiskConfig": RiskConfig,
             "RiskState": RiskState,
+            "UserPreference": UserPreference,
         }
         sources = (
             ("primary", self.sessions),
@@ -541,11 +1086,48 @@ class DatabaseHub:
             raise RuntimeError("No relational database is configured")
         return None
 
+    async def _get_many(self, statement: Any, model: type[Any]) -> list[Any]:
+        errors: dict[str, str] = {}
+        for sessions in (self.sessions, self.backup_sessions):
+            if sessions is None:
+                continue
+            try:
+                async with sessions() as session:
+                    result = await session.execute(statement)
+                    rows = list(result.scalars().all())
+                    if errors and not rows:
+                        raise RuntimeError("Database read used a failover database")
+                    return rows
+            except DATABASE_ERRORS as exc:
+                errors["database"] = type(exc).__name__
+        if errors:
+            raise RuntimeError(f"{model.__name__} read failed: {next(iter(errors.values()))}")
+        if not self.enabled:
+            raise RuntimeError("No relational database is configured")
+        return []
+
     async def close(self) -> None:
         if self.engine:
             await self.engine.dispose()
         if self.backup_engine:
             await self.backup_engine.dispose()
+
+    async def health(self) -> dict[str, str]:
+        statuses: dict[str, str] = {}
+        for name, sessions in (
+            ("supabase", self.sessions),
+            ("neon", self.backup_sessions),
+        ):
+            if sessions is None:
+                statuses[name] = "not_configured"
+                continue
+            try:
+                async with sessions() as session:
+                    await session.execute(text("SELECT 1"))
+                statuses[name] = "healthy"
+            except DATABASE_ERRORS as exc:
+                statuses[name] = f"error:{type(exc).__name__}"
+        return statuses
 
 
 def _model_payload(record: Any) -> dict[str, Any]:

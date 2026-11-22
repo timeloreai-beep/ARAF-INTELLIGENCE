@@ -8,6 +8,18 @@ def test_fastapi_serves_frontend_without_exposing_env_file():
 
     assert client.get("/").status_code == 200
     assert client.get("/app.js").status_code == 200
+    assert client.get("/style.css").status_code == 200
+    assert client.get("/engines.js").status_code == 200
     assert client.get("/admin").status_code == 200
+    assert client.get("/admin-ghost-control").status_code == 200
+    assert client.get("/ghost-admin.js").status_code == 200
     assert client.get("/.env").status_code == 404
+
+
+def test_fastapi_serves_terminal_files_from_static_directory():
+    client = TestClient(app)
+
+    assert "ARAF INTELLIGENCE" in client.get("/").text
+    assert "HARDENED INSTITUTIONAL ENGINE" in client.get("/app.js").text
+    assert "araf-api-base" in client.get("/").text
 

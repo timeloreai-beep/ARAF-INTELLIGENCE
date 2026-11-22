@@ -53,7 +53,7 @@ def test_risk_guardian_restores_persisted_daily_lock():
         "test",
         {
             "capital_inr": 100000,
-            "max_daily_loss_pct": 2.5,
+            "max_daily_loss_amount": 2500,
             "max_per_trade_risk_pct": 2,
             "max_trades_per_day": 5,
             "daily_pnl_inr": -3000,

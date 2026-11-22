@@ -16,6 +16,7 @@ from pymongo.errors import PyMongoError
 from ..brokers.coindcx import CoinDCXAdapter
 from ..brokers.shoonya import ShoonyaAdapter
 from ..dependencies import current_subject
+from ..security import decrypt_broker_session, encrypt_broker_session
 from ..services.risk_persistence import is_persistence_degraded
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,128 @@ async def _quote_response(request: Request, subject: str, record: dict, cache_ke
     }
 
 
+async def _shoonya_adapter(request: Request, subject: str) -> ShoonyaAdapter:
+    redis = request.app.state.redis
+    adapter = ShoonyaAdapter(redis=redis)
+    if not redis.enabled:
+        return adapter
+    try:
+        cached = await redis.get_json(f"broker:session:shoonya:{subject}")
+    except (RedisError, ValueError) as exc:
+        logger.warning("Could not read Shoonya session cache: %s", type(exc).__name__)
+        return adapter
+    if (
+        isinstance(cached, dict)
+        and cached.get("user_id") == adapter.user_id
+        and isinstance(cached.get("session_token"), str)
+    ):
+        try:
+            adapter.session_token = _decrypt_broker_session(cached["session_token"])
+        except ValueError as exc:
+            logger.warning("Cached Shoonya session could not be decrypted: %s", type(exc).__name__)
+    return adapter
+
+
+def _encrypt_broker_session(token: str) -> str:
+    return encrypt_broker_session(token)
+
+
+def _decrypt_broker_session(value: str) -> str:
+    return decrypt_broker_session(value)
+
+
+async def _cache_shoonya_session(request: Request, subject: str, adapter: ShoonyaAdapter) -> None:
+    redis = request.app.state.redis
+    if not redis.enabled or not adapter.session_token:
+        return
+    try:
+        await redis.set_json(
+            f"broker:session:shoonya:{subject}",
+            {
+                "user_id": adapter.user_id,
+                "session_token": _encrypt_broker_session(adapter.session_token),
+            },
+            ttl_seconds=3600,
+        )
+    except (RedisError, ValueError) as exc:
+        logger.warning("Could not cache Shoonya session: %s", type(exc).__name__)
+
+
+async def _require_approved_broker_user(request: Request, subject: str) -> None:
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="Broker account status unavailable")
+    try:
+        user = await database.get_app_user(subject)
+    except (SQLAlchemyError, RuntimeError, OSError, TimeoutError) as exc:
+        logger.warning("Broker account status lookup failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Broker account status unavailable") from exc
+    if not user or not user.is_active:
+        raise HTTPException(status_code=403, detail="An active user account is required")
+    if user.kyc_status not in {"APPROVED", "VERIFIED_COMPLIANT"}:
+        raise HTTPException(status_code=403, detail="KYC approval is required for broker login")
+
+
+@router.post("/shoonya/login")
+async def login_shoonya(
+    request: Request,
+    subject: str = Depends(current_subject),
+) -> dict:
+    await _require_approved_broker_user(request, subject)
+    redis = request.app.state.redis
+    if not redis.enabled:
+        raise HTTPException(status_code=503, detail="Broker session storage unavailable")
+    adapter = ShoonyaAdapter(redis=redis)
+    try:
+        data = await adapter.login()
+        if not adapter.session_token:
+            raise RuntimeError("Shoonya did not issue a session token")
+        await redis.set_json(
+            f"broker:session:shoonya:{subject}",
+            {
+                "user_id": adapter.user_id,
+                "session_token": _encrypt_broker_session(adapter.session_token),
+            },
+            ttl_seconds=3600,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("Shoonya login transport failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Shoonya login request failed") from exc
+    except (RedisError, ValueError) as exc:
+        logger.warning("Shoonya session storage failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Could not store Shoonya session") from exc
+    return {
+        "success": True,
+        "linked": True,
+        "uname": str(data.get("uname") or adapter.user_id),
+        "expiresInSeconds": 3600,
+    }
+
+
+@router.post("/coindcx/login")
+async def login_coindcx(
+    request: Request,
+    subject: str = Depends(current_subject),
+) -> dict:
+    await _require_approved_broker_user(request, subject)
+    try:
+        result = await CoinDCXAdapter().login()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("CoinDCX login probe failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="CoinDCX authentication probe failed") from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="CoinDCX returned an invalid authentication response") from exc
+    return {
+        "success": True,
+        "linked": result["linked"],
+        "positionsCount": result["positions_count"],
+    }
+
+
 @router.post("/test/shoonya/quote")
 async def test_shoonya_quote(
     payload: ShoonyaQuoteRequest,
@@ -246,9 +369,14 @@ async def test_shoonya_quote(
         }
 
     try:
-        quote = await ShoonyaAdapter().get_quote(payload.symbol, payload.exchange)
+        adapter = await _shoonya_adapter(request, subject)
+        quote = await adapter.get_quote(payload.symbol, payload.exchange)
+        await _cache_shoonya_session(request, subject, adapter)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RedisError as exc:
+        logger.warning("Shoonya session cache unavailable: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Shoonya session cache unavailable") from exc
     except httpx.HTTPError as exc:
         logger.warning("Shoonya quote request failed: %s", type(exc).__name__)
         raise HTTPException(status_code=502, detail="Shoonya quote request failed") from exc
@@ -307,7 +435,9 @@ async def test_shoonya_positions(
     subject: str = Depends(current_subject),
 ) -> dict:
     try:
-        rows = await ShoonyaAdapter().get_positions()
+        adapter = await _shoonya_adapter(request, subject)
+        rows = await adapter.get_positions()
+        await _cache_shoonya_session(request, subject, adapter)
         positions = [_normalize_position(row, "SHOONYA") for row in rows]
         persistence = await _persist_positions(request, subject, "SHOONYA", rows)
     except RuntimeError as exc:

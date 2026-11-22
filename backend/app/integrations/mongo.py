@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import UpdateOne
 
 from ..config import get_settings
 
@@ -47,6 +48,11 @@ class MongoHub:
             [("subject", 1), ("created_at", -1)],
             name="audit_subject_time",
         )
+        await self.database["news_events"].create_index(
+            [("event_id", 1)],
+            unique=True,
+            name="news_event_id",
+        )
 
     async def insert(self, collection: str, document: dict[str, Any]) -> str | None:
         if self.database is None:
@@ -55,6 +61,31 @@ class MongoHub:
         record.setdefault("created_at", datetime.now(timezone.utc))
         result = await self.database[collection].insert_one(record)
         return str(result.inserted_id)
+
+    async def insert_news_items(self, items: list[dict[str, Any]]) -> None:
+        if self.database is None or not items:
+            return
+        operations = [
+            UpdateOne(
+                {"event_id": item["id"]},
+                {
+                    "$setOnInsert": {
+                        "event_id": item["id"],
+                        "source": item["source"],
+                        "title": item["title"],
+                        "description": item["description"],
+                        "url": item["url"],
+                        "published_at": item["pubDate"],
+                        "priority": item["priority"],
+                        "priority_reasons": item["priorityReasons"],
+                        "created_at": datetime.now(timezone.utc),
+                    }
+                },
+                upsert=True,
+            )
+            for item in items
+        ]
+        await self.database["news_events"].bulk_write(operations, ordered=False)
 
     async def find(self, collection: str, query: dict[str, Any], limit: int = 100) -> list[dict]:
         if self.database is None:

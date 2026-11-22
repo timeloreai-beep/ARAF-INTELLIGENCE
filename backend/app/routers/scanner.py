@@ -119,7 +119,13 @@ async def scan_crypto(
     request: Request,
     subject: str = Depends(current_subject),
 ) -> dict:
-    items = await UniverseScanner().scan_crypto_binance(payload.limit)
+    try:
+        items = await UniverseScanner().scan_crypto(payload.limit)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Crypto market data sources are unavailable",
+        ) from exc
     if payload.eligible_only:
         items = [item for item in items if item["eligible"]]
     persistence = await _persist_scan(request, subject, "CRYPTO", items)

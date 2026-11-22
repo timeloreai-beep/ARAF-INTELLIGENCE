@@ -48,6 +48,66 @@ class FirebaseHub:
         reference = self.firestore.collection("users").document(subject).collection("devices").document(token_id)
         await run_in_threadpool(reference.set, {"token": token, "updatedAt": firestore.SERVER_TIMESTAMP})
 
+    async def upsert_preferences(self, subject: str, preferences: dict[str, Any]) -> None:
+        if self.firestore is None:
+            raise RuntimeError("Firebase Firestore is not configured")
+        from starlette.concurrency import run_in_threadpool
+
+        reference = (
+            self.firestore.collection("users")
+            .document(subject)
+            .collection("settings")
+            .document("terminal")
+        )
+        await run_in_threadpool(
+            reference.set,
+            {"preferences": preferences, "updatedAt": firestore.SERVER_TIMESTAMP},
+            merge=True,
+        )
+
+    async def get_preferences(self, subject: str) -> dict[str, Any] | None:
+        if self.firestore is None:
+            raise RuntimeError("Firebase Firestore is not configured")
+        from starlette.concurrency import run_in_threadpool
+
+        reference = (
+            self.firestore.collection("users")
+            .document(subject)
+            .collection("settings")
+            .document("terminal")
+        )
+        snapshot = await run_in_threadpool(reference.get)
+        if not snapshot.exists:
+            return None
+        data = snapshot.to_dict() or {}
+        preferences = data.get("preferences")
+        return preferences if isinstance(preferences, dict) else None
+
+    async def publish_market_alert(self, item: dict[str, Any]) -> None:
+        if self.firestore is None:
+            raise RuntimeError("Firebase Firestore is not configured")
+        from starlette.concurrency import run_in_threadpool
+
+        await run_in_threadpool(
+            self.firestore.collection("market_alerts").add,
+            {
+                "eventId": item["id"],
+                "source": item["source"],
+                "title": item["title"],
+                "url": item["url"],
+                "reasons": item["priorityReasons"],
+                "createdAt": firestore.SERVER_TIMESTAMP,
+            },
+        )
+
+    async def ping(self) -> bool:
+        if not self.firestore:
+            return False
+        from starlette.concurrency import run_in_threadpool
+
+        await run_in_threadpool(lambda: list(self.firestore.collections()))
+        return True
+
     async def send_to_subject(
         self,
         subject: str,
