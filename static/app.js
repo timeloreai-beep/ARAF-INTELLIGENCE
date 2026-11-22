@@ -15,9 +15,20 @@ const FASTAPI_TARGET_ROUTES = Object.freeze({
     health: "/health",
     news_feed: "/news/feed",
     get_risk_state: "/risk/state",
+    get_master_user: "/auth/master-user",
+    get_subscription_upi_intent: "/auth/subscription/upi-intent",
+    submit_subscription_payment_proof: "/auth/subscription/payment-proof",
+    save_master_user: "/auth/master-user",
+    submit_kyc: "/auth/kyc",
+    send_real_otp: "/auth/otp/send",
+    verify_server_otp: "/auth/otp/verify",
+    set_master_pin: "/auth/pin",
+    verify_pin: "/auth/pin/verify",
+    logout_session: "/auth/logout",
     login_with_trader_uid: "/auth/resolve-trader-uid"
 });
 const FASTAPI_AUTH_FALLBACK_TARGETS = new Set([
+    "get_master_user",
     "login_with_trader_uid"
 ]);
 const LOCAL_TERMINAL_SETTINGS_KEY = "ARAF_TERMINAL_SETTINGS";
@@ -99,11 +110,37 @@ const SUPPORTED_LANGUAGES = {
 };
 
 const BUSINESS_PAYMENT_CONFIG = {
-    merchantUpiId: "Q458765829@ybl",
-    merchantName: "ARAF DIGITAL CENTER",
     monthlyPrice: 299,
     trialDays: 30
 };
+let subscriptionStatusPollTimer = null;
+
+async function syncGlobalSubscriptionPrice() {
+    try {
+        const response = await fetch(`${FASTAPI_BASE_URL}/admin/ghost/pricing`, {
+            cache: "no-store"
+        });
+        if (!response.ok) throw new Error(`Pricing request failed (${response.status})`);
+        const data = await response.json();
+        const price = Number(data.global_monthly_fee_inr);
+        if (!Number.isFinite(price) || price < 0) {
+            throw new Error("Server returned an invalid subscription price");
+        }
+        BUSINESS_PAYMENT_CONFIG.monthlyPrice = price;
+        const priceEl = document.getElementById("displayDynamicSubPrice");
+        if (priceEl) priceEl.textContent = `₹${price.toLocaleString("en-IN")}`;
+        updateSubscriptionMonthTotal();
+        return true;
+    } catch (error) {
+        console.warn("[Subscription Pricing]:", error);
+        return false;
+    }
+}
+
+void syncGlobalSubscriptionPrice();
+window.setInterval(() => {
+    if (!document.hidden) void syncGlobalSubscriptionPrice();
+}, 30000);
 
 const SESSION_VAULT = {
     userKey: null,
@@ -289,10 +326,13 @@ async function secureApiCall(target, options = {}) {
             timeoutMs: options.timeoutMs,
             forceTokenRefresh: options.forceTokenRefresh === true
         });
+        const fallbackStatuses = target === "get_master_user"
+            ? [0, 401, 404, 500, 501, 502, 503, 504]
+            : [0, 404, 500, 501, 502, 503, 504];
         if (
             response.ok ||
             !FASTAPI_AUTH_FALLBACK_TARGETS.has(target) ||
-            ![0, 404, 500, 501, 502, 503, 504].includes(response.status)
+            !fallbackStatuses.includes(response.status)
         ) {
             return normalizeFastApiTargetResponse(target, response);
         }
@@ -863,19 +903,105 @@ function checkProAccess() {
         showPendingAdminHoldScreen(SESSION_VAULT.activeUser);
         return false;
     }
-    if (SESSION_VAULT.activeUser.isVipFree === true) return true;
-    const expiresAt = new Date(SESSION_VAULT.activeUser.subscriptionExpiresAt || 0);
-    if (new Date() < expiresAt) return true;
-
-    const priceEl = document.getElementById("displayDynamicSubPrice");
-    if (priceEl) priceEl.textContent = `₹${BUSINESS_PAYMENT_CONFIG.monthlyPrice}`;
-    const uidDisplay = document.getElementById("displayUserTraderUid");
-    if (uidDisplay) uidDisplay.textContent = SESSION_VAULT.activeUser.traderUid || "PENDING";
-    document.getElementById("subscriptionLockModal")?.classList.remove("hidden");
+    if (isSubscriptionActive(SESSION_VAULT.activeUser)) return true;
+    showSubscriptionPaywall();
     return false;
 }
 
+function isSubscriptionActive(profile) {
+    if (!profile) return false;
+    if (profile.isVipFree === true) return true;
+    const expiresAt = Date.parse(profile.subscriptionExpiresAt || "");
+    return Number.isFinite(expiresAt) && expiresAt > Date.now();
+}
+
+function updateSubscriptionStatusUi() {
+    const badge = document.getElementById("settingsSubscriptionBadge");
+    const profile = SESSION_VAULT.activeUser;
+    if (!badge || !profile) return;
+    if (isSubscriptionActive(profile)) {
+        const label = profile.isVipFree
+            ? "Active ✅ (Lifetime VIP)"
+            : `Active ✅ (Expires: ${new Intl.DateTimeFormat("en-GB", {
+                timeZone: "Asia/Kolkata",
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric"
+            }).format(new Date(profile.subscriptionExpiresAt)).replaceAll("/", "-")})`;
+        badge.textContent = label;
+        badge.className = "inline-flex rounded-full border border-emerald-400/60 bg-emerald-500/15 px-2.5 py-1 text-[9px] font-mono font-black text-emerald-700 shadow-[0_0_12px_rgba(16,185,129,0.35)]";
+        return;
+    }
+    badge.textContent = "Inactive • Subscription required";
+    badge.className = "inline-flex rounded-full border border-rose-300 bg-rose-50 px-2.5 py-1 text-[9px] font-mono font-bold text-rose-700";
+}
+
+function showSubscriptionPaywall() {
+    const profile = SESSION_VAULT.activeUser;
+    const priceEl = document.getElementById("displayDynamicSubPrice");
+    if (priceEl) {
+        priceEl.textContent = `₹${BUSINESS_PAYMENT_CONFIG.monthlyPrice.toLocaleString("en-IN")}`;
+    }
+    const uidDisplay = document.getElementById("displayUserTraderUid");
+    if (uidDisplay) uidDisplay.textContent = profile?.traderUid || "PENDING";
+    document.getElementById("subscriptionLockModal")?.classList.remove("hidden");
+    document.getElementById("authKycModal")?.classList.add("hidden");
+    document.getElementById("quickUnlockModal")?.classList.add("hidden");
+    document.getElementById("setupPinModal")?.classList.add("hidden");
+    document.getElementById("subscriptionPayButton")?.focus({ preventScroll: true });
+    void syncGlobalSubscriptionPrice();
+    if (!subscriptionStatusPollTimer && auth.currentUser) {
+        subscriptionStatusPollTimer = window.setInterval(() => {
+            if (!document.hidden) void refreshSubscriptionStatus();
+        }, 15000);
+    }
+}
+
+async function refreshSubscriptionStatus() {
+    if (!auth.currentUser) return false;
+    const result = await ArafCloudMaster.loadUserFromAnyDevice();
+    if (result.status !== "OK" || !result.fullData?.profile) {
+        const status = document.getElementById("subscriptionPaymentStatus");
+        if (status) status.textContent = "Could not check subscription status. Please retry.";
+        return false;
+    }
+    const profile = result.fullData.profile;
+    SESSION_VAULT.savedCloudUser = result.fullData;
+    SESSION_VAULT.activeUser = profile;
+    updateSubscriptionStatusUi();
+    if (profile.isActive === false) {
+        if (subscriptionStatusPollTimer) clearInterval(subscriptionStatusPollTimer);
+        subscriptionStatusPollTimer = null;
+        showPendingAdminHoldScreen(profile);
+        return false;
+    }
+    if (!isSubscriptionActive(profile)) return false;
+
+    if (subscriptionStatusPollTimer) clearInterval(subscriptionStatusPollTimer);
+    subscriptionStatusPollTimer = null;
+    document.getElementById("subscriptionLockModal")?.classList.add("hidden");
+    const status = document.getElementById("subscriptionPaymentStatus");
+    if (status) status.textContent = "Subscription activated. Access is now available.";
+    if (profile.kycStatus !== "APPROVED" && profile.kycStatus !== "VERIFIED_COMPLIANT") {
+        showPendingAdminHoldScreen(profile);
+    } else if (SESSION_VAULT.hasServerPin) {
+        const savedPinToken = sessionStorage.getItem("ARAF_PIN_SESSION");
+        if (savedPinToken) {
+            SESSION_VAULT.pinSessionToken = savedPinToken;
+            void unlockTerminalSuccess();
+        } else {
+            document.getElementById("unlockWelcomeTitle").textContent =
+                `Welcome, ${profile.fullName || "Trader"}!`;
+            document.getElementById("quickUnlockModal")?.classList.remove("hidden");
+        }
+    } else {
+        document.getElementById("setupPinModal")?.classList.remove("hidden");
+    }
+    return true;
+}
+
 function updateVipTrialBadgeUi() {
+    updateSubscriptionStatusUi();
     const badge = document.getElementById("hudVipTrialBadge");
     if (!badge || !SESSION_VAULT.activeUser) return;
 
@@ -897,18 +1023,176 @@ function updateVipTrialBadgeUi() {
     }
 }
 
-function triggerDirectUpiPayment() {
-    const traderUid = SESSION_VAULT.activeUser?.traderUid || "UNASSIGNED";
-    const upiId = BUSINESS_PAYMENT_CONFIG.merchantUpiId;
-    const merchantName = encodeURIComponent(BUSINESS_PAYMENT_CONFIG.merchantName);
-    const amount = BUSINESS_PAYMENT_CONFIG.monthlyPrice;
-    const note = encodeURIComponent(`ARAF VIP License UID: ${traderUid}`);
-    window.location.href = `upi://pay?pa=${upiId}&pn=${merchantName}&am=${amount}&cu=INR&tn=${note}`;
+function getSelectedSubscriptionMonths() {
+    const input = document.getElementById("subscriptionMonths");
+    const months = Number.parseInt(input?.value || "1", 10);
+    if (!Number.isInteger(months) || months < 1 || months > 12) {
+        if (input) input.value = "1";
+        return 1;
+    }
+    return months;
 }
 
-function closeSubscriptionModal() {
-    document.getElementById("subscriptionLockModal")?.classList.add("hidden");
+function updateSubscriptionMonthTotal() {
+    const months = getSelectedSubscriptionMonths();
+    const total = BUSINESS_PAYMENT_CONFIG.monthlyPrice * months;
+    const totalEl = document.getElementById("subscriptionSelectedTotal");
+    if (totalEl) {
+        totalEl.textContent = `₹${total.toLocaleString("en-IN")}`;
+    }
+    const priceEl = document.getElementById("displayDynamicSubPrice");
+    if (priceEl) {
+        priceEl.textContent = `₹${BUSINESS_PAYMENT_CONFIG.monthlyPrice.toLocaleString("en-IN")}`;
+    }
 }
+
+async function triggerDirectUpiPayment() {
+    const status = document.getElementById("subscriptionPaymentStatus");
+    const payButton = document.getElementById("subscriptionPayButton");
+    const qrContainer = document.getElementById("upiQrContainer");
+    if (payButton) payButton.disabled = true;
+    const months = getSelectedSubscriptionMonths();
+    if (status) status.textContent = "Preparing your secure UPI payment details…";
+    try {
+        const idToken = auth.currentUser
+            ? await auth.currentUser.getIdToken()
+            : null;
+        const response = await fetch(
+            `${FASTAPI_BASE_URL}/auth/subscription/upi-intent?months=${months}`,
+            {
+                method: "GET",
+                headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
+                cache: "no-store"
+            }
+        );
+        const result = await response.json().catch(() => ({}));
+        const resultWrapper = { ok: response.ok, status: response.status, data: result };
+        if (!resultWrapper.ok || !resultWrapper.data?.success) {
+            throw new Error(resultWrapper.data?.detail || resultWrapper.data?.message || "Payment details are unavailable.");
+        }
+        const { intent_uri: intentUri, qr_svg: qrSvg, amount_inr: amount } = resultWrapper.data;
+        if (typeof intentUri !== "string" || !intentUri.startsWith("upi://pay?") || typeof qrSvg !== "string") {
+            throw new Error("The server returned invalid UPI payment details.");
+        }
+        const qrImage = document.getElementById("upiIntentQr");
+        const intentLink = document.getElementById("upiIntentLink");
+        const copyButton = document.getElementById("copyUpiIntentButton");
+        if (qrImage) qrImage.src = `data:image/svg+xml;base64,${btoa(qrSvg)}`;
+        if (intentLink) {
+            intentLink.href = intentUri;
+            intentLink.classList.remove("hidden");
+        }
+        if (copyButton) {
+            copyButton.dataset.intentUri = intentUri;
+            copyButton.classList.remove("hidden");
+        }
+        if (qrContainer) qrContainer.classList.remove("hidden");
+        if (status) status.textContent =
+            `Pay ₹${Number(amount).toLocaleString("en-IN")} in your UPI app. Access unlocks after payment is verified by an admin.`;
+
+        const isMobile = navigator.userAgentData?.mobile === true
+            || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+            || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+        if (isMobile) window.location.assign(intentUri);
+    } catch (error) {
+        console.error("[UPI Intent]:", error);
+        if (status) status.textContent = error.message || "Could not prepare UPI payment. Please retry.";
+    } finally {
+        if (payButton) payButton.disabled = false;
+    }
+}
+
+async function copyUpiIntentUri() {
+    const intentUri = document.getElementById("copyUpiIntentButton")?.dataset.intentUri;
+    const status = document.getElementById("subscriptionPaymentStatus");
+    if (!intentUri) {
+        if (status) status.textContent = "Prepare the UPI payment link first.";
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(intentUri);
+        if (status) status.textContent = "UPI payment link copied.";
+    } catch (error) {
+        console.error("[UPI Link Copy]:", error);
+        if (status) status.textContent = "Clipboard access failed. Use the visible UPI link instead.";
+    }
+}
+
+async function submitSubscriptionPaymentProof() {
+    const months = getSelectedSubscriptionMonths();
+    const fileInput = document.getElementById("subscriptionProof");
+    const file = fileInput?.files?.[0];
+    const status = document.getElementById("subscriptionPaymentStatus");
+    if (!file) {
+        if (status) status.textContent = "Select a JPEG, PNG, or WebP payment proof screenshot.";
+        return;
+    }
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+        if (status) status.textContent = "Payment proof must be JPEG, PNG, or WebP.";
+        return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+        if (status) status.textContent = "Payment proof exceeds 5 MB.";
+        return;
+    }
+    if (!auth.currentUser) {
+        if (status) status.textContent = "Sign in before sending payment proof.";
+        return;
+    }
+
+    if (status) status.textContent = "Sending payment proof to Telegram admin…";
+    try {
+        const idToken = await auth.currentUser.getIdToken();
+        const form = new FormData();
+        form.append("months", String(months));
+        form.append("proof", file);
+        const response = await fetch(
+            `${FASTAPI_BASE_URL}/auth/subscription/payment-proof`,
+            {
+                method: "POST",
+                headers: { Authorization: `Bearer ${idToken}` },
+                body: form
+            }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) {
+            throw new Error(data.detail || data.message || "Payment proof could not be sent.");
+        }
+        if (status) {
+            status.textContent =
+                `Payment proof sent for ${months} month${months === 1 ? "" : "s"}. Wait for Telegram admin approval.`;
+        }
+    } catch (error) {
+        console.error("[Subscription Payment Proof]:", error);
+        if (status) status.textContent = error.message || "Payment proof relay failed.";
+    }
+}
+
+document.addEventListener("keydown", event => {
+    const dialog = document.getElementById("subscriptionLockModal");
+    if (!dialog || dialog.classList.contains("hidden")) return;
+    if (event.key === "Escape") {
+        event.preventDefault();
+        return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(dialog.querySelectorAll(
+        'button:not(:disabled):not(.hidden), a[href]:not(.hidden)'
+    )).filter(element => element.getClientRects().length > 0);
+    if (!focusable.length) {
+        event.preventDefault();
+        return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+    }
+});
 
 async function triggerBiometricFingerprintAuth() {
     if (window.PublicKeyCredential && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
@@ -1003,6 +1287,11 @@ async function unlockTerminalSuccess() {
     const kycStat = SESSION_VAULT.activeUser?.kycStatus;
     if (SESSION_VAULT.activeUser && kycStat !== "APPROVED" && kycStat !== "VERIFIED_COMPLIANT") {
         showPendingAdminHoldScreen(SESSION_VAULT.activeUser);
+        return;
+    }
+    if (SESSION_VAULT.activeUser && !isSubscriptionActive(SESSION_VAULT.activeUser)) {
+        isTerminalUnlocked = false;
+        showSubscriptionPaywall();
         return;
     }
 
@@ -1194,13 +1483,28 @@ auth.onAuthStateChanged(async (user) => {
         }
 
         const cloudData = loadRes.fullData;
+        if (cloudData?.profile?.isActive === false) {
+            SESSION_VAULT.activeUser = cloudData.profile;
+            showPendingAdminHoldScreen(cloudData.profile);
+            alert("Your account access is disabled. Contact ARAF support for assistance.");
+            return;
+        }
         if (cloudData && cloudData.profile && cloudData.profile.kycStatus) {
             SESSION_VAULT.savedCloudUser = cloudData;
             SESSION_VAULT.activeUser = cloudData.profile;
 
             const st = cloudData.profile.kycStatus;
+            updateSubscriptionStatusUi();
+            if (cloudData.profile.isActive === false) {
+                showPendingAdminHoldScreen(cloudData.profile);
+                return;
+            }
             if (st !== "APPROVED" && st !== "VERIFIED_COMPLIANT") {
                 showPendingAdminHoldScreen(cloudData.profile);
+                return;
+            }
+            if (!isSubscriptionActive(cloudData.profile)) {
+                showSubscriptionPaywall();
                 return;
             }
 
@@ -1229,6 +1533,8 @@ auth.onAuthStateChanged(async (user) => {
             }
         }
     } else {
+        if (subscriptionStatusPollTimer) clearInterval(subscriptionStatusPollTimer);
+        subscriptionStatusPollTimer = null;
         isTerminalUnlocked = false;
         serverRiskStateLoaded = false;
         serverAutoTradeStateLoaded = false;
@@ -1615,6 +1921,14 @@ function showPendingAdminHoldScreen(profileObj) {
     document.getElementById("authStepKyc")?.classList.add("hidden");
     document.getElementById("authStepPending")?.classList.remove("hidden");
 
+    const revoked = profileObj.isActive === false;
+    document.querySelector("#authStepPending h3").textContent =
+        revoked ? "Account Access Revoked" : "Pending Admin Approval";
+    document.querySelector("#authStepPending > p").textContent = revoked
+        ? "An administrator has revoked this account's access. Contact ARAF support if you believe this is a mistake."
+        : "Your compliance profile has been submitted to ARAF Admin Desk. Your app will unlock immediately upon verification.";
+    document.getElementById("pendingUserKycStatus").textContent =
+        revoked ? "ACCESS_REVOKED" : (profileObj.kycStatus || "PENDING_ADMIN_REVIEW");
     document.getElementById("pendingUserName").textContent = profileObj.fullName || "-";
     document.getElementById("pendingUserUid").textContent = profileObj.traderUid || "-";
     document.getElementById("pendingUserPan").textContent = profileObj.panMasked || profileObj.pan || "-";
@@ -1680,6 +1994,10 @@ async function recheckAdminApprovalStatus() {
     if (cloudData && (cloudData.profile?.kycStatus === "APPROVED" || cloudData.profile?.kycStatus === "VERIFIED_COMPLIANT")) {
         SESSION_VAULT.savedCloudUser = cloudData;
         SESSION_VAULT.activeUser = cloudData.profile;
+        if (!isSubscriptionActive(cloudData.profile)) {
+            showSubscriptionPaywall();
+            return;
+        }
         alert("Congratulations! Your KYC is approved. The app is now unlocking.");
         if (SESSION_VAULT.hasServerPin) {
             if (SESSION_VAULT.pinSessionToken) unlockTerminalSuccess();
@@ -1698,6 +2016,8 @@ async function recheckAdminApprovalStatus() {
 
 async function handleSessionWipeLogout() {
     try {
+        if (subscriptionStatusPollTimer) clearInterval(subscriptionStatusPollTimer);
+        subscriptionStatusPollTimer = null;
         if (auth.currentUser) {
             await secureApiCall("logout_session", { method: "POST" }).catch(() => {});
         }
@@ -5949,6 +6269,16 @@ function exportGovernanceAuditTrail() {
 }
 
 function switchTab(name) {
+    if (
+        SESSION_VAULT.activeUser
+        && SESSION_VAULT.activeUser.isActive !== false
+        && (SESSION_VAULT.activeUser.kycStatus === "APPROVED"
+            || SESSION_VAULT.activeUser.kycStatus === "VERIFIED_COMPLIANT")
+        && !isSubscriptionActive(SESSION_VAULT.activeUser)
+    ) {
+        showSubscriptionPaywall();
+        return;
+    }
     const tabMap = {
         Home: "tabContentHome",
         Chart: "tabContentChart",

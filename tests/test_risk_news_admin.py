@@ -154,17 +154,18 @@ def test_coinpaprika_adapter_always_uses_the_public_keyless_api():
     assert all("authorization" not in call.headers for call in calls)
 
 
-def test_risk_pnl_sync_is_a_loss_watermark_and_cannot_unlock():
+def test_risk_pnl_sync_uses_actual_net_pnl_and_breach_remains_locked():
     guardian = RiskGuardian()
     initial = guardian.sync_pnl("user-1", 5000)
-    assert initial.daily_pnl_inr == 0
+    assert initial.daily_pnl_inr == 5000
+    assert not initial.is_hard_locked
 
     breached = guardian.sync_pnl("user-1", -2500)
     recovered = guardian.sync_pnl("user-1", 1000)
 
     assert breached.is_hard_locked
     assert recovered.is_hard_locked
-    assert recovered.daily_pnl_inr == -2500
+    assert recovered.daily_pnl_inr == 1000
     with pytest.raises(PermissionError):
         guardian.reset("user-1")
 

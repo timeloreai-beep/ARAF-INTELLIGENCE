@@ -37,6 +37,7 @@ from .routers import (
 )
 from .dependencies import risk_guardian
 from .services.news import NewsEngine
+from .services.telegram_payments import telegram_callback_worker
 from .services.automation import OpportunityHub
 from .services.paper_lifecycle import advance_paper_position
 from .services.scheduler import is_india_market_open, seconds_until_shoonya_login
@@ -274,10 +275,16 @@ async def lifespan(app: FastAPI):
         ))
         else None
     )
+    telegram_task = (
+        asyncio.create_task(telegram_callback_worker(app))
+        if get_settings().telegram_bot_token
+        and get_settings().telegram_admin_chat_id
+        else None
+    )
     try:
         yield
     finally:
-        for task in (shoonya_login_task, automation_task):
+        for task in (shoonya_login_task, automation_task, telegram_task):
             if task:
                 task.cancel()
                 try:
@@ -336,6 +343,7 @@ app.include_router(admin.router)
 app.include_router(news.router)
 app.include_router(preferences.router)
 app.include_router(ghost_admin.router)
+app.include_router(ghost_admin.activation_router)
 
 
 @app.get("/", include_in_schema=False)

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from .config import APEX_MAX_DAILY_SETUPS, DEFAULT_MAX_DAILY_TRADES
@@ -270,6 +270,31 @@ class GhostAutoTradeControl(BaseModel):
     enabled: bool | None = None
     global_kill_switch: bool | None = None
     reason: str = Field(default="ADMIN_CONTROL", min_length=1, max_length=255)
+
+
+class GhostUserAccessUpdate(BaseModel):
+    is_active: bool
+
+
+class GhostUserVipUpdate(BaseModel):
+    is_vip_free: bool
+
+
+class GhostSubscriptionUpdate(BaseModel):
+    expires_on: date
+
+
+class GhostSubscriptionTerm(BaseModel):
+    months: int = Field(ge=1, le=12)
+
+
+class GhostActivationRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=255)
+    months: int = Field(ge=1, le=12)
+
+
+class GhostSystemConfigurationUpdate(BaseModel):
+    global_monthly_fee_inr: float = Field(gt=0, le=1_000_000, allow_inf_nan=False)
 
 
 class UserPreferencesPayload(BaseModel):

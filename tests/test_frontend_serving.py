@@ -12,6 +12,9 @@ def test_fastapi_serves_frontend_without_exposing_env_file():
     assert client.get("/engines.js").status_code == 200
     assert client.get("/admin").status_code == 200
     assert client.get("/admin-ghost-control").status_code == 200
+    ghost_page = client.get("/admin/ghost/page")
+    assert ghost_page.status_code == 200
+    assert "User Management" in ghost_page.text
     assert client.get("/ghost-admin.js").status_code == 200
     assert client.get("/.env").status_code == 404
 

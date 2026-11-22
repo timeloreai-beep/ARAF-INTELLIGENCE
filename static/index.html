@@ -91,15 +91,15 @@
     </div>
 </div>
 
-<div id="subscriptionLockModal" class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-md flex items-center justify-center p-4 hidden">
-    <div class="groww-card border border-amber-500/40 w-full max-w-sm p-6 space-y-4 shadow-2xl text-center relative opportunity-glow bg-white">
+<div id="subscriptionLockModal" role="dialog" aria-modal="true" aria-labelledby="subscriptionLockTitle" class="fixed inset-0 z-[100] bg-white flex items-center justify-center overflow-y-auto p-4 hidden">
+    <div class="groww-card border border-amber-500/40 w-full max-w-md my-auto p-5 space-y-4 shadow-2xl text-center relative opportunity-glow bg-white">
         <div class="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-600 flex items-center justify-center mx-auto text-2xl shadow-inner">
             <i class="fa-solid fa-crown animate-bounce"></i>
         </div>
         <div>
-            <span class="text-[9px] bg-amber-500 text-white font-mono font-black px-2 py-0.5 rounded shadow-sm">TRIAL EXPIRED</span>
-            <h3 class="text-base font-black text-slate-900 mt-1 heading-font">Upgrade to ARAF VIP</h3>
-            <p class="text-[10.5px] text-slate-500 leading-snug mt-1">Your 30-day VIP trial has ended. Renew license (activated upon server/admin confirmation).</p>
+            <span class="text-[9px] bg-amber-500 text-white font-mono font-black px-2 py-0.5 rounded shadow-sm">ACCESS LOCKED</span>
+            <h3 id="subscriptionLockTitle" class="text-base font-black text-slate-900 mt-1 heading-font">Subscription required</h3>
+            <p class="text-[10.5px] text-slate-500 leading-snug mt-1">Dashboard, scanners, and trading remain locked until your subscription is active.</p>
         </div>
 
         <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex items-center justify-between text-left">
@@ -117,14 +117,32 @@
             <div class="text-2xl font-black text-[#00d09c] mono-font mt-0.5">
                 <span id="displayDynamicSubPrice">₹299</span> <span class="text-xs text-slate-500 font-normal">/ month</span>
             </div>
-            <span class="text-[9px] text-purple-600 font-mono font-bold block mt-1">Verified Merchant: ARAF DIGITAL CENTER</span>
+            <span class="text-[9px] text-purple-600 font-mono font-bold block mt-1">Secure UPI intent • INR</span>
         </div>
+        <label for="subscriptionMonths" class="block text-left">
+            <span class="text-[9px] font-bold text-slate-600 uppercase">Subscription duration (months)</span>
+            <input id="subscriptionMonths" type="number" min="1" max="12" value="1" inputmode="numeric" class="mt-1 w-full rounded-xl border border-slate-300 bg-white p-2.5 text-center text-sm font-black text-slate-900" onchange="updateSubscriptionMonthTotal()">
+        </label>
+        <div class="text-[10px] font-bold text-emerald-700">Selected total: <span id="subscriptionSelectedTotal">₹299</span></div>
 
-        <button onclick="triggerDirectUpiPayment()" class="w-full bg-[#5f259f] hover:bg-[#4d1d82] text-white font-extrabold py-3.5 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-2">
-            <i class="fa-solid fa-mobile-screen-button text-sm"></i> <span>Initiate UPI Payment Intent</span>
+        <button id="subscriptionPayButton" onclick="triggerDirectUpiPayment()" class="w-full bg-[#5f259f] hover:bg-[#4d1d82] text-white font-extrabold py-3.5 rounded-xl text-xs active:scale-95 transition shadow-lg flex items-center justify-center space-x-2">
+            <i class="fa-solid fa-mobile-screen-button text-sm"></i> <span>PAY NOW</span>
         </button>
 
-        <button onclick="closeSubscriptionModal()" class="text-[9.5px] text-slate-500 hover:text-slate-800 font-mono underline mx-auto block">Explore Free Features</button>
+        <div id="upiQrContainer" class="hidden rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+            <p class="text-[9px] font-bold text-slate-600">Desktop? Scan this QR with your UPI app, or open the UPI link.</p>
+            <img id="upiIntentQr" alt="UPI payment QR code" class="mx-auto h-44 w-44 rounded-lg bg-white p-2">
+            <a id="upiIntentLink" class="hidden text-[10px] font-bold text-purple-700 underline" rel="noreferrer">Open UPI payment link</a>
+            <button id="copyUpiIntentButton" type="button" onclick="copyUpiIntentUri()" class="hidden mx-auto rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[9px] font-bold text-slate-700">Copy UPI link</button>
+        </div>
+        <label for="subscriptionProof" class="block rounded-xl border border-slate-300 bg-white p-3 text-left">
+            <span class="block text-[9px] font-bold text-slate-700 uppercase">Payment proof screenshot</span>
+            <input id="subscriptionProof" type="file" accept="image/jpeg,image/png,image/webp" class="mt-2 block w-full text-[9px] text-slate-600">
+        </label>
+        <button type="button" onclick="submitSubscriptionPaymentProof()" class="w-full rounded-xl border border-emerald-500 bg-emerald-50 py-2.5 text-[10px] font-black text-emerald-700">Send Payment Proof to Telegram Admin</button>
+        <p id="subscriptionPaymentStatus" role="status" aria-live="polite" class="min-h-4 text-[9px] text-slate-600"></p>
+        <p class="text-[9px] text-slate-500">UPI intent cannot confirm a completed payment automatically. Access unlocks after payment verification and activation by an admin.</p>
+        <button type="button" onclick="refreshSubscriptionStatus()" class="mx-auto block text-[9.5px] font-mono font-bold text-emerald-700 underline">I've paid — refresh access</button>
     </div>
 </div>
 
@@ -298,7 +316,7 @@
                 <div class="flex justify-between text-slate-600"><span>Trader Name:</span> <b id="pendingUserName" class="text-slate-900 uppercase font-bold">-</b></div>
                 <div class="flex justify-between text-slate-600"><span>Trader UID:</span> <b id="pendingUserUid" class="text-[#00d09c] font-black">-</b></div>
                 <div class="flex justify-between text-slate-600"><span>PAN Masked:</span> <b id="pendingUserPan" class="text-amber-600 font-bold">-</b></div>
-                <div class="flex justify-between text-slate-600"><span>Status:</span> <span class="text-amber-600 font-black">PENDING_ADMIN_REVIEW</span></div>
+                <div class="flex justify-between text-slate-600"><span>Status:</span> <span id="pendingUserKycStatus" class="text-amber-600 font-black">PENDING_ADMIN_REVIEW</span></div>
             </div>
             <div class="flex space-x-2 pt-1">
                 <button type="button" onclick="recheckAdminApprovalStatus()" class="flex-1 groww-btn-green py-2.5 rounded-xl text-[10.5px] active:scale-95 transition">
@@ -1031,6 +1049,7 @@
                     <div>
                         <h4 id="settingsProfileName" class="text-xs font-black text-slate-900 heading-font">ARAF TRADER</h4>
                         <span id="settingsKycBadge" class="text-[8px] bg-[#00d09c]/15 text-[#059669] px-1.5 py-0.2 rounded font-mono font-bold border border-[#00d09c]/30">KYC: PENDING</span>
+                        <div class="mt-1"><span id="settingsSubscriptionBadge" class="inline-flex rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-[9px] font-mono font-bold text-slate-600">Subscription status unavailable</span></div>
                     </div>
                 </div>
                 <span class="text-[8.5px] gold-badge px-2 py-0.5 rounded-full font-mono font-bold">PRO DESK</span>

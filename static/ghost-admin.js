@@ -8,6 +8,7 @@
     const statusEl = document.getElementById("page-status");
     const healthEl = document.getElementById("health-feed");
     const scannerEl = document.getElementById("scanner-feed");
+    const usersBody = document.getElementById("users-table-body");
     let token = sessionStorage.getItem(tokenKey) || "";
 
     function showStatus(message, element = statusEl) {
@@ -122,6 +123,181 @@
         });
     }
 
+    function selectTab(name) {
+        document.querySelectorAll("[data-admin-tab]").forEach(button => {
+            const selected = button.dataset.adminTab === name;
+            button.setAttribute("aria-selected", String(selected));
+        });
+        document.querySelectorAll(".admin-tab").forEach(panel => {
+            panel.hidden = panel.id !== `admin-tab-${name}`;
+        });
+    }
+
+    async function loadUsers() {
+        usersBody.replaceChildren();
+        const loadingRow = document.createElement("tr");
+        const loadingCell = document.createElement("td");
+        loadingCell.colSpan = 6;
+        loadingCell.textContent = "Loading users…";
+        loadingRow.append(loadingCell);
+        usersBody.append(loadingRow);
+        const data = await api("/admin/ghost/users?limit=200");
+        usersBody.replaceChildren();
+        if (!data.users.length) {
+            const emptyRow = document.createElement("tr");
+            const emptyCell = document.createElement("td");
+            emptyCell.colSpan = 6;
+            emptyCell.textContent = "No users are stored in Supabase.";
+            emptyRow.append(emptyCell);
+            usersBody.append(emptyRow);
+            return;
+        }
+        data.users.forEach(user => {
+            const row = document.createElement("tr");
+            [
+                user.user_name,
+                user.email,
+                user.subscription_status.replaceAll("_", " "),
+                user.expires_at ? new Date(user.expires_at).toLocaleDateString("en-IN") : "—",
+                user.kyc_status
+            ].forEach(value => {
+                const cell = document.createElement("td");
+                cell.textContent = value || "—";
+                row.append(cell);
+            });
+
+            const actionsCell = document.createElement("td");
+            const actions = document.createElement("div");
+            actions.className = "user-actions";
+            const approve = document.createElement("button");
+            approve.type = "button";
+            approve.textContent = "Approve KYC";
+            approve.disabled = ["APPROVED", "VERIFIED_COMPLIANT"].includes(user.kyc_status);
+            approve.addEventListener("click", () => updateUser(
+                user, "/kyc/approve", {}, "KYC approved"
+            ));
+
+            const vip = document.createElement("button");
+            vip.type = "button";
+            vip.textContent = user.is_vip_free ? "Remove Free VIP" : "Make Free/VIP";
+            vip.addEventListener("click", () => updateUser(
+                user, "/vip", { is_vip_free: !user.is_vip_free },
+                user.is_vip_free ? "Free VIP removed" : "Free VIP enabled"
+            ));
+
+            const expiry = document.createElement("input");
+            expiry.type = "date";
+            expiry.setAttribute("aria-label", `Subscription expiry for ${user.user_name}`);
+            const todayIndia = new Intl.DateTimeFormat("en-CA", {
+                timeZone: "Asia/Kolkata"
+            }).format(new Date());
+            expiry.min = todayIndia;
+            const existingExpiry = user.expires_at
+                ? new Intl.DateTimeFormat("en-CA", {
+                    timeZone: "Asia/Kolkata"
+                }).format(new Date(user.expires_at))
+                : "";
+            expiry.value = existingExpiry >= todayIndia ? existingExpiry : todayIndia;
+            const extend = document.createElement("button");
+            extend.type = "button";
+            extend.textContent = "Extend Subscription";
+            extend.addEventListener("click", () => {
+                if (!expiry.value) {
+                    showStatus("Choose a subscription expiry date.", document.getElementById("users-status"));
+                    return;
+                }
+                updateUser(
+                    user, "/subscription", { expires_on: expiry.value },
+                    "Subscription expiry updated"
+                );
+            });
+
+            const customMonths = document.createElement("input");
+            customMonths.type = "number";
+            customMonths.min = "1";
+            customMonths.max = "12";
+            customMonths.step = "1";
+            customMonths.value = "1";
+            customMonths.setAttribute("aria-label", `Custom subscription months for ${user.user_name}`);
+            const customActivate = document.createElement("button");
+            customActivate.type = "button";
+            customActivate.textContent = "Activate Custom Months";
+            customActivate.addEventListener("click", () => {
+                const months = Number.parseInt(customMonths.value, 10);
+                if (!Number.isInteger(months) || months < 1 || months > 12) {
+                    showStatus("Months must be a whole number from 1 to 12.", document.getElementById("users-status"));
+                    return;
+                }
+                if (!window.confirm(
+                    `Confirm ${months}-month activation for ${user.user_name}? Verify payment or confirm this admin override first.`
+                )) return;
+                updateUser(
+                    user,
+                    "/subscription/extend",
+                    { months },
+                    `Subscription activated for ${months} month${months === 1 ? "" : "s"}`
+                );
+            });
+            actions.append(customMonths, customActivate);
+
+            const access = document.createElement("button");
+            access.type = "button";
+            access.className = user.is_active ? "danger" : "safe";
+            access.textContent = user.is_active ? "Revoke Access" : "Restore Access";
+            access.addEventListener("click", () => {
+                if (user.is_active && !window.confirm(`Revoke access for ${user.user_name}?`)) return;
+                updateUser(
+                    user, "/access", { is_active: !user.is_active },
+                    user.is_active ? "User access revoked" : "User access restored"
+                );
+            });
+            actions.prepend(approve, vip, expiry, extend);
+            actions.append(access);
+            actionsCell.append(actions);
+            row.append(actionsCell);
+            usersBody.append(row);
+        });
+    }
+
+    async function updateUser(user, route, body, successMessage) {
+        try {
+            await api(`/admin/ghost/users/${encodeURIComponent(user.user_id)}${route}`, {
+                method: "POST",
+                body
+            });
+            showStatus(`${successMessage}: ${user.user_name}.`, document.getElementById("users-status"));
+            await loadUsers();
+        } catch (error) {
+            showStatus(error.message, document.getElementById("users-status"));
+        }
+    }
+
+    async function loadConfiguration() {
+        const data = await api("/admin/ghost/configuration");
+        document.getElementById("global-monthly-fee").value = data.global_monthly_fee_inr;
+    }
+
+    document.querySelectorAll("[data-admin-tab]").forEach(button => {
+        button.addEventListener("click", () => selectTab(button.dataset.adminTab));
+    });
+
+    document.getElementById("system-configuration-form").addEventListener("submit", async event => {
+        event.preventDefault();
+        const input = document.getElementById("global-monthly-fee");
+        try {
+            const data = await api("/admin/ghost/configuration", {
+                method: "POST",
+                body: { global_monthly_fee_inr: Number(input.value) }
+            });
+            showStatus(
+                `Global monthly fee saved: ₹${Number(data.global_monthly_fee_inr).toLocaleString("en-IN")}.`,
+                document.getElementById("configuration-status")
+            );
+        } catch (error) {
+            showStatus(error.message, document.getElementById("configuration-status"));
+        }
+    });
+
     document.getElementById("login-form").addEventListener("submit", async event => {
         event.preventDefault();
         const passwordInput = document.getElementById("admin-password");
@@ -135,7 +311,7 @@
             sessionStorage.setItem(tokenTtlKey, String(Date.now() + data.expires_in * 1000));
             passwordInput.value = "";
             showAuthenticated(true);
-            await Promise.all([loadControl(), loadHealth(), loadScanner()]);
+            await Promise.all([loadControl(), loadHealth(), loadScanner(), loadUsers(), loadConfiguration()]);
         } catch (error) {
             passwordInput.value = "";
             showStatus(error.message);
@@ -155,6 +331,7 @@
     document.getElementById("risk-reset").addEventListener("click", () => resetRiskLock().catch(error => showStatus(error.message)));
     document.getElementById("refresh-health").addEventListener("click", () => loadHealth().catch(error => showStatus(error.message)));
     document.getElementById("refresh-scanner").addEventListener("click", () => loadScanner().catch(error => showStatus(error.message)));
+    document.getElementById("refresh-users").addEventListener("click", () => loadUsers().catch(error => showStatus(error.message, document.getElementById("users-status"))));
     document.getElementById("scan-now").addEventListener("click", async () => {
         try {
             showStatus("Running the configured India universe scan…");
@@ -198,7 +375,7 @@
 
     if (token && Number(sessionStorage.getItem(tokenTtlKey) || 0) > Date.now()) {
         showAuthenticated(true);
-        Promise.all([loadControl(), loadHealth(), loadScanner()]).catch(error => showStatus(error.message));
+        Promise.all([loadControl(), loadHealth(), loadScanner(), loadUsers(), loadConfiguration()]).catch(error => showStatus(error.message));
         window.setInterval(() => loadHealth().catch(error => showStatus(error.message)), 30000);
         window.setInterval(() => loadScanner().catch(error => showStatus(error.message)), 10000);
     } else {

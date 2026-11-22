@@ -9,10 +9,13 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, TypeVar
+from urllib.parse import urlencode
 
 import httpx
+import qrcode
+from qrcode.image.svg import SvgPathImage
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, UploadFile, File, Form, Query
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -33,6 +36,7 @@ from ..security import (
     decode_access_token,
     verify_pbkdf2_pin,
 )
+from ..services.telegram_payments import send_payment_proof
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -62,6 +66,17 @@ def _require_redis(request: Request) -> Any:
 
 def _has_persistence(status: Any) -> bool:
     return bool(status.primary_applied or status.backup_applied)
+
+
+def _subscription_expiry_is_active(expires_at: datetime | None) -> bool:
+    if expires_at is None:
+        return False
+    normalized = (
+        expires_at.replace(tzinfo=timezone.utc)
+        if expires_at.tzinfo is None
+        else expires_at.astimezone(timezone.utc)
+    )
+    return normalized > datetime.now(timezone.utc)
 
 
 async def _db_call(action: Awaitable[T], failure_detail: str) -> T:
@@ -428,6 +443,9 @@ async def submit_kyc(
             role=user.role if user else "user",
             kyc_status="PENDING_ADMIN_REVIEW",
             is_active=True,
+            is_vip_free=False,
+            is_subscribed=True,
+            subscription_expires_at=trial_expires_at,
         ),
         "Could not persist KYC profile",
     )
@@ -554,7 +572,16 @@ async def get_master_user(
         "aadhaarMasked": kyc.aadhaar_masked if kyc else None,
         "authorizedSegment": kyc.authorized_segment if kyc else None,
         "trialExpiresAt": kyc.trial_expires_at.isoformat() if kyc else None,
-        "isVipFree": False,
+        "subscriptionExpiresAt": (
+            user.subscription_expires_at.isoformat()
+            if user.subscription_expires_at
+            else (kyc.trial_expires_at.isoformat() if kyc else None)
+        ),
+        "isVipFree": user.is_vip_free,
+        "isSubscribed": bool(
+            user.is_vip_free or _subscription_expiry_is_active(user.subscription_expires_at)
+        ),
+        "isActive": user.is_active,
     }
     return {
         "success": True,
@@ -562,6 +589,167 @@ async def get_master_user(
             database.get_pin_credential(subject), "PIN storage unavailable"
         ) is not None,
         "fullData": {"profile": profile, "preferences": prefs.preferences if prefs else {}},
+    }
+
+
+@router.get("/subscription/upi-intent")
+async def create_subscription_upi_intent(
+    request: Request,
+    subject: str = Depends(current_subject),
+    months: int = Query(default=1, ge=1, le=12),
+) -> dict[str, Any]:
+    if not isinstance(months, int):
+        months = 1
+    settings = get_settings()
+    upi_id = settings.admin_upi_id.strip()
+    merchant_name = settings.admin_name.strip()
+    if (
+        not upi_id
+        or "@" not in upi_id
+        or any(character.isspace() for character in upi_id)
+        or not merchant_name
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Merchant UPI payment details are not configured",
+        )
+
+    database = _require_database(request)
+    user = await _db_call(
+        database.get_app_user(subject), "Subscription storage unavailable"
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User profile not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account access is disabled")
+    if user.is_vip_free or _subscription_expiry_is_active(user.subscription_expires_at):
+        raise HTTPException(status_code=409, detail="Subscription is already active")
+
+    configuration = await _db_call(
+        database.get_system_configuration(), "Subscription pricing is unavailable"
+    )
+    monthly_amount = (
+        float(configuration.global_monthly_fee_inr)
+        if configuration
+        else 299.0
+    )
+    amount = monthly_amount * months
+    intent_uri = "upi://pay?" + urlencode(
+        {
+            "pa": upi_id,
+            "pn": merchant_name,
+            "am": f"{amount:.2f}".rstrip("0").rstrip("."),
+            "cu": "INR",
+            "tn": f"ARAF-Terminal-Sub-{subject}-{months}M",
+        }
+    )
+    qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=6,
+        border=4,
+    )
+    qr.add_data(intent_uri)
+    qr.make(fit=True)
+    qr_svg = qr.make_image(image_factory=SvgPathImage).to_string().decode("utf-8")
+    return {
+        "success": True,
+        "user_id": subject,
+        "amount_inr": amount,
+        "months": months,
+        "intent_uri": intent_uri,
+        "qr_svg": qr_svg,
+    }
+
+
+@router.post("/subscription/payment-proof")
+async def submit_subscription_payment_proof(
+    request: Request,
+    subject: str = Depends(current_subject),
+    months: int = Form(ge=1, le=12),
+    proof: UploadFile = File(...),
+) -> dict[str, Any]:
+    if proof.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=415, detail="Payment proof must be JPEG, PNG, or WebP")
+    image_bytes = await proof.read()
+    if not image_bytes:
+        raise HTTPException(status_code=422, detail="Payment proof is empty")
+    if len(image_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Payment proof exceeds 5 MB")
+
+    database = _require_database(request)
+    user = await _db_call(
+        database.get_app_user(subject), "Payment proof profile storage unavailable"
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User profile not found")
+    email = str(user.email or "").strip().lower()
+    if not EMAIL_PATTERN.fullmatch(email):
+        raise HTTPException(status_code=422, detail="Verified account email is required")
+
+    configuration = await _db_call(
+        database.get_system_configuration(), "Subscription pricing is unavailable"
+    )
+    monthly_amount = (
+        float(configuration.global_monthly_fee_inr)
+        if configuration
+        else 299.0
+    )
+    payment_id = str(uuid.uuid4())
+    proof_sha256 = hashlib.sha256(image_bytes).hexdigest()
+    payment_status = await _db_call(
+        database.upsert_subscription_payment_proof(
+            id=payment_id,
+            user_id=subject,
+            email=email,
+            months=months,
+            amount_inr=monthly_amount * months,
+            proof_sha256=proof_sha256,
+            status="PENDING",
+            telegram_message_id=None,
+            processed_at=None,
+        ),
+        "Could not persist subscription payment proof",
+    )
+    if not _has_persistence(payment_status):
+        raise HTTPException(
+            status_code=503,
+            detail="Subscription payment proof could not be persisted",
+        )
+    try:
+        result = await send_payment_proof(
+            subject=subject,
+            email=email,
+            months=months,
+            image_bytes=image_bytes,
+            filename=proof.filename or "payment-proof.jpg",
+            amount_inr=monthly_amount * months,
+            payment_id=payment_id,
+        )
+    except (RuntimeError, httpx.HTTPError) as exc:
+        logger.exception("Could not relay subscription payment proof")
+        raise HTTPException(
+            status_code=503,
+            detail="Payment proof relay is unavailable",
+        ) from exc
+    await _db_call(
+        database.upsert_subscription_payment_proof(
+            id=payment_id,
+            user_id=subject,
+            email=email,
+            months=months,
+            amount_inr=monthly_amount * months,
+            proof_sha256=proof_sha256,
+            status="PENDING",
+            telegram_message_id=str(result["message_id"]),
+            processed_at=None,
+        ),
+        "Could not persist Telegram payment proof metadata",
+    )
+    return {
+        "success": True,
+        "email": email,
+        "months": months,
+        "telegram_message_id": result["message_id"],
     }
 
 

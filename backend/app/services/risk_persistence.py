@@ -87,10 +87,9 @@ async def _load_cached_risk_record(
         ):
             if key in record and key in result:
                 result[key] = min(float(result[key]), float(record[key]))
-        result["daily_pnl_inr"] = min(
-            float(result.get("daily_pnl_inr", 0)),
-            float(record.get("daily_pnl_inr", 0)),
-        )
+        record_pnl = float(record.get("daily_pnl_inr", result.get("daily_pnl_inr", 0)))
+        if same_day:
+            result["daily_pnl_inr"] = record_pnl
         result["trades_count"] = max(
             int(result.get("trades_count", 0)),
             int(record.get("trades_count", 0)),
@@ -135,10 +134,10 @@ def _merge_cached_into_database_record(
         "max_trades_per_day",
     ):
         record[key] = min(record[key], cached_record.get(key, record[key]))
-    record["daily_pnl_inr"] = min(
-        record["daily_pnl_inr"],
-        float(cached_record.get("daily_pnl_inr", record["daily_pnl_inr"])),
-    )
+    if same_day:
+        record["daily_pnl_inr"] = float(
+            cached_record.get("daily_pnl_inr", record["daily_pnl_inr"])
+        )
     record["trades_count"] = max(
         record["trades_count"],
         int(cached_record.get("trades_count", record["trades_count"])),
@@ -195,13 +194,6 @@ async def load_risk_state(request, subject: str, guardian: RiskGuardian) -> User
                 if config and config.risk_lock_expires_at
                 else None
             )
-            config_watermark = (
-                float(config.risk_lock_watermark_inr)
-                if config
-                and config_lock_expiry
-                and config_lock_expiry > datetime.now(timezone.utc)
-                else 0
-            )
             record = {
                 "capital_inr": float(config.capital_inr) if config else 100000,
                 "max_daily_loss_amount": (
@@ -213,10 +205,7 @@ async def load_risk_state(request, subject: str, guardian: RiskGuardian) -> User
                     if config
                     else min(DEFAULT_MAX_DAILY_TRADES, guardian.max_daily_trades)
                 ),
-                "daily_pnl_inr": min(
-                    float(state.daily_pnl_inr) if state else 0,
-                    config_watermark,
-                ),
+                "daily_pnl_inr": float(state.daily_pnl_inr) if state else 0,
                 "trades_count": int(state.trades_count) if state else 0,
                 "trading_day": state.trading_day if state else trading_day,
                 "is_hard_locked": bool(

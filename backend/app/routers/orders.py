@@ -14,8 +14,6 @@ from ..dependencies import current_subject, get_risk_guardian
 from ..schemas import OrderRequest
 from ..services.risk import RiskGuardian
 from ..quant.confluence import evaluate_five_layers
-from ..brokers.shoonya import ShoonyaAdapter
-from ..brokers.coindcx import CoinDCXAdapter
 from ..services.risk_persistence import (
     is_persistence_degraded,
     load_risk_state,
@@ -26,6 +24,76 @@ from ..services.automation import trading_day_ist
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/orders", tags=["orders"])
 _idem: dict[str, dict] = {}
+APPROVED_KYC_STATUSES = {"APPROVED", "VERIFIED_COMPLIANT"}
+
+
+async def _release_order_reservation(
+    request: Request,
+    subject: str,
+    client_order_id: str,
+    request_digest: str,
+) -> None:
+    idempotency_key = f"{subject}:{client_order_id}"
+    redis_key = f"idempotency:order:{idempotency_key}"
+    redis = request.app.state.redis
+    cached = _idem.get(idempotency_key)
+    if cached and cached.get("request_digest") == request_digest:
+        _idem.pop(idempotency_key, None)
+    if redis.enabled:
+        try:
+            await redis.delete(redis_key)
+        except RedisError:
+            logger.exception("Could not release order idempotency reservation")
+
+
+async def _sync_subscription_access(
+    request: Request,
+    subject: str,
+    guardian: RiskGuardian,
+) -> None:
+    database = request.app.state.database
+    get_app_user = getattr(database, "get_app_user", None)
+    if not database.enabled or not callable(get_app_user):
+        return
+    try:
+        user = await get_app_user(subject)
+    except (RuntimeError, SQLAlchemyError) as exc:
+        logger.exception("Could not verify subscription access for order entry")
+        raise HTTPException(
+            status_code=503, detail="Subscription access verification is unavailable"
+        ) from exc
+
+    if user is None:
+        guardian.sync_user_access(subject, True)
+        return
+
+    guardian.sync_user_access(
+        subject,
+        bool(
+            user.is_active
+            and user.kyc_status in APPROVED_KYC_STATUSES
+            and (
+                user.is_vip_free
+                or (
+                    user.subscription_expires_at is not None
+                    and (
+                        user.subscription_expires_at.replace(tzinfo=timezone.utc)
+                        if user.subscription_expires_at.tzinfo is None
+                        else user.subscription_expires_at.astimezone(timezone.utc)
+                    )
+                    > datetime.now(timezone.utc)
+                )
+            )
+        ),
+    )
+    if not guardian.user_access_allowed(subject):
+        if not user.is_active:
+            code = "USER_ACCESS_REVOKED"
+        elif user.kyc_status not in APPROVED_KYC_STATUSES:
+            code = "USER_KYC_NOT_APPROVED"
+        else:
+            code = "SUBSCRIPTION_EXPIRED"
+        raise HTTPException(status_code=403, detail={"code": code})
 
 
 @router.post("/place")
@@ -54,6 +122,8 @@ async def _place_order_unlocked(
         cached = _idem[idempotency_key]
         if cached["request_digest"] != request_digest:
             raise HTTPException(status_code=409, detail="Client order ID was already used with different parameters")
+        if cached.get("status") == "IN_PROGRESS":
+            raise HTTPException(status_code=409, detail="Client order ID is currently being processed")
         return cached["result"]
 
     database = request.app.state.database
@@ -69,10 +139,27 @@ async def _place_order_unlocked(
                         status_code=409,
                         detail="Client order ID was already used with different parameters",
                     )
+                if cached.get("status") == "IN_PROGRESS":
+                    raise HTTPException(status_code=409, detail="Client order ID is currently being processed")
                 _idem[idempotency_key] = cached
-                return cached["result"]
+                if isinstance(cached.get("result"), dict):
+                    return cached["result"]
         except (RedisError, ValueError):
             logger.exception("Could not read order idempotency cache")
+        try:
+            reserved = await redis.set_if_absent(
+                redis_key,
+                json.dumps(
+                    {"request_digest": request_digest, "status": "IN_PROGRESS"},
+                    separators=(",", ":"),
+                ),
+                ttl_seconds=300,
+            )
+            if not reserved:
+                raise HTTPException(status_code=409, detail="Client order ID is already reserved")
+        except RedisError:
+            logger.exception("Could not reserve order idempotency key")
+            raise HTTPException(status_code=503, detail="Order idempotency reservation is unavailable")
 
     if database.enabled:
         try:
@@ -91,8 +178,30 @@ async def _place_order_unlocked(
                 }
                 return prior_result
 
+    _idem[idempotency_key] = {
+        "request_digest": request_digest,
+        "status": "IN_PROGRESS",
+    }
+
     if payload.mode == "LIVE" and not get_settings().live_trading_enabled:
         raise HTTPException(status_code=403, detail="Live trading is disabled; paper mode only")
+    if payload.mode == "LIVE":
+        await _release_order_reservation(
+            request,
+            subject,
+            payload.client_order_id,
+            request_digest,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "LIVE_BROKER_PROTECTION_UNAVAILABLE",
+                "reason": "Exchange-native stop-loss, take-profit, live exit, and position reconciliation are not verified",
+            },
+        )
+
+    if payload.operation == "ENTRY":
+        await _sync_subscription_access(request, subject, guardian)
 
     risk_persistence: dict = {}
     risk_state = None
@@ -268,6 +377,11 @@ async def _place_order_unlocked(
         try:
             risk_persistence = await persist_risk_state(request, subject, state)
         except RuntimeError as exc:
+            state = guardian.rollback_entry_reservation(subject)
+            try:
+                await persist_risk_state(request, subject, state)
+            except RuntimeError:
+                logger.exception("Could not roll back risk trade reservation")
             if auto_budget_reserved:
                 try:
                     await database.settle_auto_trade_budget(
@@ -301,39 +415,6 @@ async def _place_order_unlocked(
         "client_order_id": payload.client_order_id,
         "protection_status": "SIMULATED_SL" if payload.mode == "PAPER" else "BROKER_PROTECTION_REQUIRED",
     }
-    if payload.mode == "LIVE":
-        try:
-            if payload.exchange == "COINDCX" or payload.symbol.upper().endswith("USDT"):
-                adapter = CoinDCXAdapter()
-                broker_result = await adapter.place_order(
-                    symbol=f"B-{payload.symbol.upper().replace('USDT', '_USDT')}",
-                    side=payload.side,
-                    quantity=payload.quantity,
-                    stop_loss=payload.stop_loss,
-                    take_profit=payload.take_profit,
-                    client_order_id=payload.client_order_id,
-                    leverage=1,
-                )
-            else:
-                adapter = ShoonyaAdapter(redis=getattr(request.app.state, "redis", None))
-                broker_result = await adapter.place_order(
-                    exchange=payload.exchange,
-                    symbol=payload.symbol,
-                    side=payload.side,
-                    quantity=int(payload.quantity),
-                )
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail={"code": "BROKER_NOT_CONFIGURED", "reason": str(exc)})
-        if not broker_result.accepted:
-            raise HTTPException(
-                status_code=502,
-                detail={"code": "BROKER_REJECTED", "reason": broker_result.message or broker_result.status},
-            )
-        result.update({
-            "broker_order_id": broker_result.broker_order_id,
-            "state": broker_result.status,
-            "protection_status": "BROKER_SL_TP_SUBMITTED",
-        })
 
     persistence: dict = {}
     if database.enabled:
@@ -389,6 +470,11 @@ async def _place_order_unlocked(
                 order_status = await database.upsert_order(**order_values)
         except SQLAlchemyError as exc:
             logger.exception("Could not persist order")
+            state = guardian.rollback_entry_reservation(subject)
+            try:
+                await persist_risk_state(request, subject, state)
+            except RuntimeError:
+                logger.exception("Could not roll back risk trade reservation after persistence failure")
             if auto_budget_reserved:
                 try:
                     await database.settle_auto_trade_budget(
@@ -412,6 +498,12 @@ async def _place_order_unlocked(
                     )
                 except RuntimeError:
                     logger.exception("Could not release auto-trade budget after rejected persistence")
+            if risk_state:
+                state = guardian.rollback_entry_reservation(subject)
+                try:
+                    await persist_risk_state(request, subject, state)
+                except RuntimeError:
+                    logger.exception("Could not roll back risk trade reservation after rejected persistence")
             raise HTTPException(status_code=503, detail="Order could not be persisted to either relational database")
         if auto_budget_reserved:
             try:
@@ -493,6 +585,33 @@ async def _place_order_unlocked(
 
 
 async def _place_order(
+    payload: OrderRequest,
+    request: Request,
+    subject: str,
+    guardian: RiskGuardian,
+    *,
+    trusted_opportunity: dict | None = None,
+) -> dict:
+    database = request.app.state.database
+    order_locks = getattr(request.app.state, "order_idempotency_locks", None)
+    if order_locks is None:
+        order_locks = {}
+        request.app.state.order_idempotency_locks = order_locks
+    idempotency_lock = order_locks.setdefault(
+        (subject, payload.client_order_id),
+        asyncio.Lock(),
+    )
+    async with idempotency_lock:
+        return await _place_order_locked(
+            payload,
+            request,
+            subject,
+            guardian,
+            trusted_opportunity=trusted_opportunity,
+        )
+
+
+async def _place_order_locked(
     payload: OrderRequest,
     request: Request,
     subject: str,

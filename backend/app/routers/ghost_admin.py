@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import calendar
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, time as datetime_time, timedelta, timezone
 import hmac
 import logging
 from pathlib import Path
@@ -18,18 +19,31 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..config import APEX_MAX_DAILY_SETUPS, get_settings
 from ..dependencies import get_risk_guardian, require_ghost_admin
-from ..schemas import GhostAdminLogin, GhostAutoTradeControl
+from ..schemas import (
+    GhostAdminLogin,
+    GhostAutoTradeControl,
+    GhostSubscriptionUpdate,
+    GhostSubscriptionTerm,
+    GhostActivationRequest,
+    GhostSystemConfigurationUpdate,
+    GhostUserAccessUpdate,
+    GhostUserVipUpdate,
+)
 from ..security import create_ghost_admin_token
 from ..services.risk import RiskGuardian
 from ..services.risk_persistence import load_risk_state, persist_risk_state
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/ghost", tags=["ghost-admin"])
+activation_router = APIRouter(prefix="/api/admin", tags=["admin-activation"])
 _attempts: dict[str, deque[float]] = {}
 _attempts_lock = threading.Lock()
 _MAX_LOGIN_FAILURES = 5
 _LOGIN_WINDOW_SECONDS = 900
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_INDIA_TIMEZONE = timezone(timedelta(hours=5, minutes=30))
+_DEFAULT_MONTHLY_FEE_INR = 299
+_APPROVED_KYC_STATUSES = {"APPROVED", "VERIFIED_COMPLIANT"}
 
 
 def _login_is_limited(address: str) -> bool:
@@ -52,7 +66,7 @@ def _record_login_failure(address: str) -> None:
 
 @router.get("/page", include_in_schema=False)
 async def ghost_admin_page() -> FileResponse:
-    return FileResponse(_PROJECT_ROOT / "admin-ghost-control.html")
+    return FileResponse(_PROJECT_ROOT / "LEGACY_JS_BACKUP" / "admin-ghost-control.html")
 
 
 @router.post("/login")
@@ -102,6 +116,499 @@ async def get_control(
         },
         "live_trading_enabled": False,
     }
+
+
+def _require_primary_persistence(persistence, detail: str) -> None:
+    if not persistence.primary_applied:
+        logger.error(
+            "%s; Supabase persistence status: %s",
+            detail,
+            persistence.as_dict(),
+        )
+        raise HTTPException(status_code=503, detail=detail)
+
+
+async def _require_ghost_user(database, subject: str):
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="User management storage is unavailable")
+    try:
+        user = await database.get_app_user(subject)
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not load a user for Ghost Admin")
+        raise HTTPException(status_code=503, detail="User management storage is unavailable") from exc
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+def _user_can_trade(user) -> bool:
+    expires_at = user.subscription_expires_at
+    if expires_at is not None:
+        expires_at = (
+            expires_at.replace(tzinfo=timezone.utc)
+            if expires_at.tzinfo is None
+            else expires_at.astimezone(timezone.utc)
+        )
+    return bool(
+        user.is_active
+        and user.kyc_status in _APPROVED_KYC_STATUSES
+        and (user.is_vip_free or (expires_at and expires_at > datetime.now(timezone.utc)))
+    )
+
+
+def _subscription_expiry_from_date(expiry_date) -> datetime:
+    expiry_ist = datetime.combine(
+        expiry_date + timedelta(days=1),
+        datetime_time.min,
+        tzinfo=_INDIA_TIMEZONE,
+    ) - timedelta(microseconds=1)
+    return expiry_ist.astimezone(timezone.utc)
+
+
+def _add_calendar_months(value, months: int):
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def _sync_guardian_access(guardian: RiskGuardian, user) -> None:
+    guardian.sync_user_access(user.external_subject, _user_can_trade(user))
+
+
+def _format_user_row(user, kyc) -> dict:
+    expires_at = user.subscription_expires_at or (
+        kyc.trial_expires_at if kyc else None
+    )
+    normalized_expiry = expires_at
+    if normalized_expiry is not None:
+        normalized_expiry = (
+            normalized_expiry.replace(tzinfo=timezone.utc)
+            if normalized_expiry.tzinfo is None
+            else normalized_expiry.astimezone(timezone.utc)
+        )
+    if not user.is_active:
+        subscription_status = "REVOKED"
+    elif user.is_vip_free:
+        subscription_status = "VIP_FREE"
+    elif normalized_expiry and normalized_expiry > datetime.now(timezone.utc):
+        subscription_status = "VIP_ACTIVE"
+    elif expires_at:
+        subscription_status = "EXPIRED"
+    else:
+        subscription_status = "FREE"
+    return {
+        "user_id": user.external_subject,
+        "user_name": (kyc.full_name if kyc else None) or user.display_name or "—",
+        "email": user.email or "—",
+        "subscription_status": subscription_status,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "kyc_status": user.kyc_status,
+        "is_vip_free": bool(user.is_vip_free),
+        "is_subscribed": bool(
+            user.is_vip_free
+            or (
+                normalized_expiry
+                and normalized_expiry > datetime.now(timezone.utc)
+            )
+        ),
+        "is_active": bool(user.is_active),
+    }
+
+
+@router.get("/users")
+async def list_users(
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=500),
+    _admin: str = Depends(require_ghost_admin),
+) -> dict:
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="User management storage is unavailable")
+    try:
+        users = await database.list_app_users(limit)
+        kyc_records = await database.list_kyc_records(
+            [user.external_subject for user in users]
+        )
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not load Ghost Admin user list")
+        raise HTTPException(status_code=503, detail="User management storage is unavailable") from exc
+    kyc_by_user = {record.user_id: record for record in kyc_records}
+    return {
+        "success": True,
+        "users": [_format_user_row(user, kyc_by_user.get(user.external_subject)) for user in users],
+    }
+
+
+@router.post("/users/{subject}/kyc/approve")
+async def approve_user_kyc(
+    subject: str,
+    request: Request,
+    _admin: str = Depends(require_ghost_admin),
+    guardian: RiskGuardian = Depends(get_risk_guardian),
+) -> dict:
+    database = request.app.state.database
+    user = await _require_ghost_user(database, subject)
+    user.kyc_status = "APPROVED"
+    user.updated_at = datetime.now(timezone.utc)
+    try:
+        kyc = await database.get_kyc_record(subject)
+        records = [user]
+        if kyc:
+            kyc.status = "APPROVED"
+            records.append(kyc)
+        persistence = await database.write_many(records)
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not approve user KYC")
+        raise HTTPException(status_code=503, detail="KYC update could not be persisted") from exc
+    _require_primary_persistence(persistence, "KYC update could not be persisted to Supabase")
+    _sync_guardian_access(guardian, user)
+    return {
+        "success": True,
+        "user_id": subject,
+        "kyc_status": user.kyc_status,
+        "risk_access_allowed": guardian.user_access_allowed(subject),
+        "persistence": persistence.as_dict(),
+    }
+
+
+@router.post("/users/{subject}/vip")
+async def update_user_vip(
+    subject: str,
+    payload: GhostUserVipUpdate,
+    request: Request,
+    _admin: str = Depends(require_ghost_admin),
+    guardian: RiskGuardian = Depends(get_risk_guardian),
+) -> dict:
+    database = request.app.state.database
+    user = await _require_ghost_user(database, subject)
+    user.is_vip_free = payload.is_vip_free
+    expiry = user.subscription_expires_at
+    if expiry is not None:
+        expiry = (
+            expiry.replace(tzinfo=timezone.utc)
+            if expiry.tzinfo is None
+            else expiry.astimezone(timezone.utc)
+        )
+    user.is_subscribed = bool(
+        payload.is_vip_free or (expiry and expiry > datetime.now(timezone.utc))
+    )
+    user.updated_at = datetime.now(timezone.utc)
+    try:
+        persistence = await database.upsert_app_user(
+            external_subject=user.external_subject,
+            provider=user.provider,
+            email=user.email,
+            display_name=user.display_name,
+            trader_uid=user.trader_uid,
+            role=user.role,
+            kyc_status=user.kyc_status,
+            is_active=user.is_active,
+            is_vip_free=user.is_vip_free,
+            is_subscribed=user.is_subscribed,
+            subscription_expires_at=user.subscription_expires_at,
+        )
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not update VIP status")
+        raise HTTPException(status_code=503, detail="Subscription update could not be persisted") from exc
+    _require_primary_persistence(persistence, "Subscription update could not be persisted to Supabase")
+    _sync_guardian_access(guardian, user)
+    return {
+        "success": True,
+        "user_id": subject,
+        "is_vip_free": user.is_vip_free,
+        "risk_access_allowed": guardian.user_access_allowed(subject),
+        "persistence": persistence.as_dict(),
+    }
+
+
+@router.post("/users/{subject}/subscription")
+async def extend_user_subscription(
+    subject: str,
+    payload: GhostSubscriptionUpdate,
+    request: Request,
+    _admin: str = Depends(require_ghost_admin),
+    guardian: RiskGuardian = Depends(get_risk_guardian),
+) -> dict:
+    today = datetime.now(_INDIA_TIMEZONE).date()
+    if payload.expires_on < today:
+        raise HTTPException(status_code=422, detail="Expiry date cannot be in the past")
+    expiry_ist = datetime.combine(
+        payload.expires_on + timedelta(days=1),
+        datetime_time.min,
+        tzinfo=_INDIA_TIMEZONE,
+    ) - timedelta(microseconds=1)
+    expires_at = expiry_ist.astimezone(timezone.utc)
+    database = request.app.state.database
+    user = await _require_ghost_user(database, subject)
+    user.subscription_expires_at = expires_at
+    user.is_vip_free = False
+    user.is_subscribed = True
+    user.updated_at = datetime.now(timezone.utc)
+    try:
+        persistence = await database.upsert_app_user(
+            external_subject=user.external_subject,
+            provider=user.provider,
+            email=user.email,
+            display_name=user.display_name,
+            trader_uid=user.trader_uid,
+            role=user.role,
+            kyc_status=user.kyc_status,
+            is_active=user.is_active,
+            is_vip_free=False,
+            is_subscribed=True,
+            subscription_expires_at=expires_at,
+        )
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not extend user subscription")
+        raise HTTPException(status_code=503, detail="Subscription update could not be persisted") from exc
+    _require_primary_persistence(persistence, "Subscription update could not be persisted to Supabase")
+    _sync_guardian_access(guardian, user)
+    return {
+        "success": True,
+        "user_id": subject,
+        "subscription_expires_at": expires_at.isoformat(),
+        "risk_access_allowed": guardian.user_access_allowed(subject),
+        "persistence": persistence.as_dict(),
+    }
+
+
+@router.post("/users/{subject}/subscription/extend")
+async def extend_user_subscription_by_term(
+    subject: str,
+    payload: GhostSubscriptionTerm,
+    request: Request,
+    _admin: str = Depends(require_ghost_admin),
+    guardian: RiskGuardian = Depends(get_risk_guardian),
+) -> dict:
+    database = request.app.state.database
+    user = await _require_ghost_user(database, subject)
+    now = datetime.now(timezone.utc)
+    current_expiry = user.subscription_expires_at
+    if current_expiry is not None:
+        current_expiry = (
+            current_expiry.replace(tzinfo=timezone.utc)
+            if current_expiry.tzinfo is None
+            else current_expiry.astimezone(timezone.utc)
+        )
+    base = (
+        current_expiry.astimezone(_INDIA_TIMEZONE).date()
+        if current_expiry and current_expiry > now
+        else now.astimezone(_INDIA_TIMEZONE).date()
+    )
+    expiry_date = _add_calendar_months(base, payload.months)
+    expires_at = _subscription_expiry_from_date(expiry_date)
+    user.subscription_expires_at = expires_at
+    user.is_vip_free = False
+    user.is_subscribed = True
+    user.updated_at = now
+    try:
+        persistence = await database.upsert_app_user(
+            external_subject=user.external_subject,
+            provider=user.provider,
+            email=user.email,
+            display_name=user.display_name,
+            trader_uid=user.trader_uid,
+            role=user.role,
+            kyc_status=user.kyc_status,
+            is_active=user.is_active,
+            is_vip_free=False,
+            is_subscribed=True,
+            subscription_expires_at=expires_at,
+        )
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not extend user subscription by term")
+        raise HTTPException(status_code=503, detail="Subscription update could not be persisted") from exc
+    _require_primary_persistence(persistence, "Subscription update could not be persisted to Supabase")
+    _sync_guardian_access(guardian, user)
+    return {
+        "success": True,
+        "user_id": subject,
+        "months_added": payload.months,
+        "subscription_expires_at": expires_at.isoformat(),
+        "is_subscribed": True,
+        "risk_access_allowed": guardian.user_access_allowed(subject),
+        "persistence": persistence.as_dict(),
+    }
+
+
+@activation_router.post("/activate-user")
+async def activate_user_by_custom_months(
+    payload: GhostActivationRequest,
+    request: Request,
+    _admin: str = Depends(require_ghost_admin),
+    guardian: RiskGuardian = Depends(get_risk_guardian),
+) -> dict:
+    """Named API alias for Ghost Telegram and external admin activation flows."""
+    return await extend_user_subscription_by_term(
+        payload.subject,
+        GhostSubscriptionTerm(months=payload.months),
+        request,
+        _admin,
+        guardian,
+    )
+
+
+async def activate_subject_by_months(database, guardian, subject: str, months: int) -> dict:
+    if not 1 <= months <= 12:
+        raise HTTPException(status_code=422, detail="Months must be between 1 and 12")
+    user = await _require_ghost_user(database, subject)
+    now = datetime.now(timezone.utc)
+    current_expiry = user.subscription_expires_at
+    if current_expiry is not None:
+        current_expiry = (
+            current_expiry.replace(tzinfo=timezone.utc)
+            if current_expiry.tzinfo is None
+            else current_expiry.astimezone(timezone.utc)
+        )
+    base = (
+        current_expiry.astimezone(_INDIA_TIMEZONE).date()
+        if current_expiry and current_expiry > now
+        else now.astimezone(_INDIA_TIMEZONE).date()
+    )
+    expiry_date = _add_calendar_months(base, months)
+    expires_at = _subscription_expiry_from_date(expiry_date)
+    user.subscription_expires_at = expires_at
+    user.is_vip_free = False
+    user.is_subscribed = True
+    user.updated_at = now
+    try:
+        persistence = await database.upsert_app_user(
+            external_subject=user.external_subject,
+            provider=user.provider,
+            email=user.email,
+            display_name=user.display_name,
+            trader_uid=user.trader_uid,
+            role=user.role,
+            kyc_status=user.kyc_status,
+            is_active=user.is_active,
+            is_vip_free=False,
+            is_subscribed=True,
+            subscription_expires_at=expires_at,
+        )
+    except (SQLAlchemyError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Subscription update could not be persisted",
+        ) from exc
+    _require_primary_persistence(
+        persistence,
+        "Subscription update could not be persisted to Supabase",
+    )
+    _sync_guardian_access(guardian, user)
+    return {
+        "success": True,
+        "user_id": subject,
+        "months_added": months,
+        "subscription_expires_at": expires_at.isoformat(),
+        "is_subscribed": True,
+    }
+
+
+@router.post("/users/{subject}/access")
+async def update_user_access(
+    subject: str,
+    payload: GhostUserAccessUpdate,
+    request: Request,
+    _admin: str = Depends(require_ghost_admin),
+    guardian: RiskGuardian = Depends(get_risk_guardian),
+) -> dict:
+    database = request.app.state.database
+    user = await _require_ghost_user(database, subject)
+    user.is_active = payload.is_active
+    user.updated_at = datetime.now(timezone.utc)
+    try:
+        persistence = await database.upsert_app_user(
+            external_subject=user.external_subject,
+            provider=user.provider,
+            email=user.email,
+            display_name=user.display_name,
+            trader_uid=user.trader_uid,
+            role=user.role,
+            kyc_status=user.kyc_status,
+            is_active=user.is_active,
+            is_vip_free=user.is_vip_free,
+            is_subscribed=user.is_subscribed,
+            subscription_expires_at=user.subscription_expires_at,
+        )
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not update user access")
+        raise HTTPException(status_code=503, detail="Access update could not be persisted") from exc
+    _require_primary_persistence(persistence, "Access update could not be persisted to Supabase")
+    _sync_guardian_access(guardian, user)
+    return {
+        "success": True,
+        "user_id": subject,
+        "is_active": user.is_active,
+        "risk_access_allowed": guardian.user_access_allowed(subject),
+        "persistence": persistence.as_dict(),
+    }
+
+
+@router.get("/configuration")
+async def get_system_configuration(
+    request: Request,
+    _admin: str = Depends(require_ghost_admin),
+) -> dict:
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="System configuration storage is unavailable")
+    try:
+        configuration = await database.get_system_configuration()
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not load Ghost Admin system configuration")
+        raise HTTPException(status_code=503, detail="System configuration storage is unavailable") from exc
+    fee = (
+        float(configuration.global_monthly_fee_inr)
+        if configuration
+        else _DEFAULT_MONTHLY_FEE_INR
+    )
+    return {"success": True, "global_monthly_fee_inr": fee}
+
+
+@router.post("/configuration")
+async def update_system_configuration(
+    payload: GhostSystemConfigurationUpdate,
+    request: Request,
+    admin: str = Depends(require_ghost_admin),
+) -> dict:
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="System configuration storage is unavailable")
+    try:
+        persistence = await database.upsert_system_configuration(
+            global_monthly_fee_inr=payload.global_monthly_fee_inr,
+            updated_by=admin,
+        )
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not persist Ghost Admin system configuration")
+        raise HTTPException(status_code=503, detail="System configuration update failed") from exc
+    _require_primary_persistence(persistence, "System configuration could not be persisted to Supabase")
+    return {
+        "success": True,
+        "global_monthly_fee_inr": payload.global_monthly_fee_inr,
+        "persistence": persistence.as_dict(),
+    }
+
+
+@router.get("/pricing")
+async def get_public_subscription_pricing(request: Request) -> dict:
+    """Expose the current product fee; administration of it remains password-protected."""
+    database = request.app.state.database
+    if not database.enabled:
+        return {"success": True, "global_monthly_fee_inr": _DEFAULT_MONTHLY_FEE_INR}
+    try:
+        configuration = await database.get_system_configuration()
+    except (SQLAlchemyError, RuntimeError) as exc:
+        logger.exception("Could not load public subscription pricing")
+        raise HTTPException(status_code=503, detail="Subscription pricing is unavailable") from exc
+    fee = (
+        float(configuration.global_monthly_fee_inr)
+        if configuration
+        else _DEFAULT_MONTHLY_FEE_INR
+    )
+    return {"success": True, "global_monthly_fee_inr": fee}
 
 
 @router.post("/control")

@@ -33,6 +33,8 @@ from ..models import (
     ReplicationOutbox,
     RiskConfig,
     RiskState,
+    SubscriptionPaymentProof,
+    SystemConfiguration,
     UserPreference,
 )
 
@@ -289,11 +291,22 @@ class DatabaseHub:
             "id",
             str(uuid.uuid5(uuid.NAMESPACE_URL, f"app-user:{subject}")),
         )
-        for field_name in ("email", "display_name", "kyc_status", "trader_uid"):
+        for field_name in (
+            "email",
+            "display_name",
+            "kyc_status",
+            "trader_uid",
+            "subscription_expires_at",
+        ):
             if values.get(field_name) is None and existing:
                 values[field_name] = getattr(existing, field_name)
         values.setdefault("kyc_status", "pending")
         values.setdefault("trader_uid", None)
+        values.setdefault("is_vip_free", existing.is_vip_free if existing else False)
+        values.setdefault(
+            "is_subscribed",
+            getattr(existing, "is_subscribed", False) if existing else False,
+        )
         values.setdefault("role", existing.role if existing else "user")
         values.setdefault("is_active", existing.is_active if existing else True)
         return await self.write_model(
@@ -819,6 +832,88 @@ class DatabaseHub:
     async def get_app_user_by_trader_uid(self, trader_uid: str) -> AppUser | None:
         return await self._get_one(AppUser, AppUser.trader_uid == trader_uid.upper())
 
+    async def list_app_users(self, limit: int = 200) -> list[AppUser]:
+        statement = (
+            select(AppUser)
+            .order_by(AppUser.created_at.desc())
+            .limit(limit)
+        )
+        return await self._get_many(statement, AppUser)
+
+    async def list_kyc_records(self, user_ids: list[str]) -> list[KycRecord]:
+        if not user_ids:
+            return []
+        return await self._get_many(
+            select(KycRecord).where(KycRecord.user_id.in_(user_ids)),
+            KycRecord,
+        )
+
+    async def upsert_system_configuration(self, **values: Any) -> PersistenceStatus:
+        values.setdefault("id", "global")
+        return await self.write_model(
+            SystemConfiguration(**values),
+            aggregate_type="SystemConfiguration",
+            aggregate_id="global",
+        )
+
+    async def get_system_configuration(self) -> SystemConfiguration | None:
+        return await self._get_one(
+            SystemConfiguration, SystemConfiguration.id == "global"
+        )
+
+    async def upsert_subscription_payment_proof(self, **values: Any) -> PersistenceStatus:
+        payment_id = str(values["id"])
+        record = SubscriptionPaymentProof(**values)
+        return await self.write_model(
+            record,
+            aggregate_type="SubscriptionPaymentProof",
+            aggregate_id=payment_id,
+        )
+
+    async def get_subscription_payment_proof(
+        self, payment_id: str
+    ) -> SubscriptionPaymentProof | None:
+        return await self._get_one(
+            SubscriptionPaymentProof,
+            SubscriptionPaymentProof.id == payment_id,
+        )
+
+    async def claim_subscription_payment(
+        self, payment_id: str, action: str
+    ) -> SubscriptionPaymentProof | None:
+        claimed: SubscriptionPaymentProof | None = None
+        for sessions in (self.sessions, self.backup_sessions):
+            if sessions is None:
+                continue
+            try:
+                async with sessions() as session:
+                    result = await session.execute(
+                        update(SubscriptionPaymentProof)
+                        .where(
+                            SubscriptionPaymentProof.id == payment_id,
+                            SubscriptionPaymentProof.status == "PENDING",
+                        )
+                        .values(
+                            status="APPROVED" if action == "APPROVE" else "REJECTED",
+                            processed_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    await session.commit()
+                    if result.rowcount and claimed is None:
+                        claimed = await session.scalar(
+                            select(SubscriptionPaymentProof).where(
+                                SubscriptionPaymentProof.id == payment_id
+                            )
+                        )
+            except DATABASE_ERRORS as exc:
+                logger = __import__("logging").getLogger(__name__)
+                logger.exception(
+                    "Could not atomically claim subscription payment %s",
+                    payment_id,
+                    exc_info=exc,
+                )
+        return claimed
+
     async def get_order(self, user_id: str, client_order_id: str) -> OrderRecord | None:
         return await self._get_one(
             OrderRecord,
@@ -1007,6 +1102,7 @@ class DatabaseHub:
             "QuoteSnapshot": QuoteSnapshot,
             "RiskConfig": RiskConfig,
             "RiskState": RiskState,
+            "SystemConfiguration": SystemConfiguration,
             "UserPreference": UserPreference,
         }
         sources = (

@@ -41,6 +41,29 @@ class AppUser(Base):
     role: Mapped[str] = mapped_column(String(32), default="user")
     kyc_status: Mapped[str] = mapped_column(String(32), default="pending")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_vip_free: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_subscribed: Mapped[bool] = mapped_column(Boolean, default=False)
+    subscription_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class SubscriptionPaymentProof(Base):
+    __tablename__ = "subscription_payment_proofs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    months: Mapped[int] = mapped_column(Integer)
+    amount_inr: Mapped[float] = mapped_column(Numeric(12, 2))
+    proof_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    telegram_message_id: Mapped[str] = mapped_column(String(64), nullable=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -225,6 +248,19 @@ class AdminControl(Base):
     auto_trade_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     global_kill_switch: Mapped[bool] = mapped_column(Boolean, default=False)
     kill_switch_reason: Mapped[str] = mapped_column(String(255), nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class SystemConfiguration(Base):
+    __tablename__ = "system_configurations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="global")
+    global_monthly_fee_inr: Mapped[float] = mapped_column(
+        Numeric(12, 2), default=299
+    )
     updated_by: Mapped[str] = mapped_column(String(255), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now

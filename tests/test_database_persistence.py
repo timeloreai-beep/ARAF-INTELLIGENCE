@@ -22,6 +22,7 @@ from backend.app.models import (
     RiskState,
     UserPreference,
     AdminControl,
+    SubscriptionPaymentProof,
 )
 
 
@@ -80,6 +81,15 @@ def test_relational_models_are_registered():
 
     # Instantiate every persistence model to verify mapped constructors.
     AppUser(external_subject="subject-1")
+    SubscriptionPaymentProof(
+        id="payment-1",
+        user_id="subject-1",
+        email="trader@example.test",
+        months=5,
+        amount_inr=1497.5,
+        proof_sha256="0" * 64,
+        status="PENDING",
+    )
     QuoteSnapshot(symbol="NIFTY", exchange="NSE")
     OrderRecord(
         client_order_id="order-0001",

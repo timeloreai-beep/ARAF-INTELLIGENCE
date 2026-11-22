@@ -52,6 +52,7 @@ class RiskGuardian:
             max_daily_loss_amount or settings.max_daily_loss_amount
         )
         self._states: dict[str, UserRiskState] = {}
+        self._user_access: dict[str, bool] = {}
         self._lock = RLock()
 
     @staticmethod
@@ -144,6 +145,8 @@ class RiskGuardian:
         del is_auto_trade
         with self._lock:
             state = self._state_for(subject)
+            if not self._user_access.get(subject, True):
+                return False, "USER_ACCESS_NOT_ENTITLED", state
             if not all(math.isfinite(value) for value in (entry_price, stop_loss, quantity)):
                 return False, "INVALID_ENTRY_OR_STOP_LOSS", state
             if state.is_hard_locked:
@@ -178,10 +181,28 @@ class RiskGuardian:
             raise ValueError("daily P&L must be finite")
         with self._lock:
             state = self._state_for(subject)
-            state.daily_pnl_inr = min(state.daily_pnl_inr, float(daily_pnl_inr))
+            state.daily_pnl_inr = float(daily_pnl_inr)
             if state.daily_pnl_inr <= state.daily_loss_limit_inr:
                 self._activate_daily_loss_lock(state)
             return state
+
+    def rollback_entry_reservation(self, subject: str) -> UserRiskState:
+        with self._lock:
+            state = self._state_for(subject)
+            if state.trades_count > 0:
+                state.trades_count -= 1
+            if state.locked_reason == "DAILY_TRADES_LIMIT_REACHED":
+                state.is_hard_locked = False
+                state.locked_reason = ""
+            return state
+
+    def sync_user_access(self, subject: str, allowed: bool) -> None:
+        with self._lock:
+            self._user_access[subject] = bool(allowed)
+
+    def user_access_allowed(self, subject: str) -> bool:
+        with self._lock:
+            return self._user_access.get(subject, True)
 
     @staticmethod
     def _activate_daily_loss_lock(
@@ -208,6 +229,38 @@ class RiskGuardian:
     def restore_persisted(self, subject: str, values: dict) -> UserRiskState:
         with self._lock:
             if subject in self._states:
+                state = self._state_for(subject)
+                try:
+                    incoming_trading_day = str(values["trading_day"])
+                    if incoming_trading_day == state.trading_day:
+                        state.daily_pnl_inr = float(values["daily_pnl_inr"])
+                        state.trades_count = max(state.trades_count, int(values["trades_count"]))
+                        state.capital_inr = min(state.capital_inr, float(values["capital_inr"]))
+                        state.max_daily_loss_amount = min(
+                            state.max_daily_loss_amount,
+                            float(values["max_daily_loss_amount"]),
+                        )
+                        state.max_per_trade_risk_pct = min(
+                            state.max_per_trade_risk_pct,
+                            float(values["max_per_trade_risk_pct"]),
+                        )
+                        state.max_trades_per_day = min(
+                            state.max_trades_per_day,
+                            int(values["max_trades_per_day"]),
+                        )
+                        state.is_hard_locked = bool(
+                            state.is_hard_locked or values["is_hard_locked"]
+                        )
+                        if values["locked_reason"]:
+                            state.locked_reason = str(values["locked_reason"])
+                    elif incoming_trading_day:
+                        state.trading_day = incoming_trading_day
+                        state.daily_pnl_inr = float(values["daily_pnl_inr"])
+                        state.trades_count = int(values["trades_count"])
+                        state.is_hard_locked = bool(values["is_hard_locked"])
+                        state.locked_reason = str(values["locked_reason"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError("Persisted risk state contains invalid values") from exc
                 return self._state_for(subject)
             required = {
                 "capital_inr",
@@ -324,7 +377,12 @@ class RiskGuardian:
         with self._lock:
             state = self._state_for(subject)
             if (
-                state.daily_pnl_inr <= state.daily_loss_limit_inr
+                (
+                    state.locked_reason == "DAILY_LOSS_LIMIT_BREACHED"
+                    and state.risk_lock_expires_at
+                    and state.risk_lock_expires_at > datetime.now(timezone.utc)
+                )
+                or state.daily_pnl_inr <= state.daily_loss_limit_inr
                 or state.trades_count >= state.max_trades_per_day
             ) and not admin_override:
                 raise PermissionError("A daily risk limit has been reached and cannot be reset today")
