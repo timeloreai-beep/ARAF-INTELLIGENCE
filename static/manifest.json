@@ -1,0 +1,22 @@
+{
+  "name": "ARAF INTELLIGENCE",
+  "short_name": "ARAF",
+  "description": "Pro Trading Desk with AI Guardian, Options, and Crypto",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1017",
+  "theme_color": "#00d09c",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "https://i.ibb.co/hRnBwJdv/Neon-A-Growth-Icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://i.ibb.co/hRnBwJdv/Neon-A-Growth-Icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

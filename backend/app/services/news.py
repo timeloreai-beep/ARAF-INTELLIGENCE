@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
 import html
+import json
 import logging
 import math
 import re
@@ -22,6 +23,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..config import Settings, get_settings
+import httpx as _httpx_client
 
 logger = logging.getLogger(__name__)
 
@@ -468,6 +470,59 @@ class NewsEngine:
             },
         }
 
+    def summaries_with_impact(self) -> list[dict[str, Any]]:
+        """Generate full readable summaries with market impact (bullish/bearish reason) for latest items."""
+        result = []
+        for item in self._latest[:50]:
+            summary = self._generate_summary_with_impact(item)
+            result.append({
+                "id": item.get("id"),
+                "title": item.get("title"),
+                "summary": summary,
+                "eventCategory": item.get("eventCategory"),
+                "priority": item.get("priority"),
+                "priorityReasons": item.get("priorityReasons"),
+                "source": item.get("source"),
+                "verifiedSource": item.get("verifiedSource"),
+                "url": item.get("url"),
+            })
+        return result
+
+    async def _gemini_translate_async(self, text: str, target_lang: str) -> str:
+        """Translate text using Gemini Flash API (async)."""
+        if not self.settings.gemini_api_key or target_lang == "en":
+            return text
+        try:
+            endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+            api_key = self.settings.gemini_api_key
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": f"Translate this natural Bengali text into fluent, mature, natural Bengali (পাকা ও শুদ্ধ Bengali). Preserve the original meaning and tone. Do not add any commentary, explanations, or English phrases. Just return the translated text only.\n\nText: {text}"}]}],
+            }
+            headers = {"Content-Type": "application/json"}
+            url = f"{endpoint}?key={api_key}"
+            async with _httpx_client.AsyncClient() as client:
+                resp = await client.post(url, json=payload, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    return text
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return text
+                content = candidates[0].get("content", "")
+                parts = content.get("parts", [])
+                if not parts:
+                    return text
+                translated = parts[0].get("text", "").strip()
+                if not translated:
+                    return text
+                # Ensure it's Bengali script, fallback to original if mostly English
+                bangla_chars = sum(1 for c in translated if '\u0980' <= c <= '\u09FF' or c in '\u00A1\u00BF')
+                if bangla_chars < len(translated) * 0.3:
+                    return text
+                return translated
+        except Exception:
+            return text
+
     async def poll_due(self) -> dict[str, Any]:
         async with self._lock:
             await self._restore_cache()
@@ -682,4 +737,98 @@ class NewsEngine:
                     await self.firebase.publish_market_alert(item)
                 except (FirebaseError, GoogleAPIError, RuntimeError):
                     logger.exception("Could not publish a priority news event to Firebase")
+
+    async def _gemini_translate(self, text: str, target_lang: str) -> str:
+        """Translate text using Gemini Flash API."""
+        if not self.settings.gemini_api_key or target_lang == "en":
+            return text
+        try:
+            endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+            api_key = self.settings.gemini_api_key
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": f"Translate this natural Bengali text into fluent, mature, natural Bengali (পাকা ও শুদ্ধ Bengali). Preserve the original meaning and tone. Do not add any commentary, explanations, or English phrases. Just return the translated text only.\n\nText: {text}"}]}],
+            }
+            headers = {"Content-Type": "application/json"}
+            url = f"{endpoint}?key={api_key}"
+            async with _httpx_client.AsyncClient() as client:
+                resp = await client.post(url, json=payload, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    return text
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return text
+                content = candidates[0].get("content", "")
+                parts = content.get("parts", [])
+                if not parts:
+                    return text
+                translated = parts[0].get("text", "").strip()
+                if not translated:
+                    return text
+                # Ensure it's Bengali script, fallback to original if mostly English
+                bangla_chars = sum(1 for c in translated if '\u0980' <= c <= '\u09FF' or c in '\u00A1\u00BF')
+                if bangla_chars < len(translated) * 0.3:
+                    return text
+                return translated
+        except Exception:
+            return text
+
+    def _generate_summary_with_impact(self, item: dict[str, Any]) -> str:
+        """Generate a full readable summary with market impact (bullish/bearish reason)."""
+        title = item.get("title", "") or ""
+        description = item.get("description", "") or ""
+        category = item.get("eventCategory", "MARKET") or "MARKET"
+        reasons = item.get("priorityReasons", []) or []
+
+        clean_title = html.unescape(title).strip()
+        clean_desc = html.unescape(description).strip()
+
+        if not clean_title:
+            return "No summary available."
+
+        # Build summary based on available data
+        summary_parts = [clean_title]
+
+        if clean_desc:
+            summary_parts.append(clean_desc)
+
+        # Add market impact interpretation
+        impact_parts = []
+        if "FII" in reasons or "DII" in reasons:
+            impact_parts.append(" institutional flow activity")
+        if "crude oil" in reasons or "oil price" in reasons:
+            impact_parts.append(" crude oil price movement")
+        if "inflation" in reasons:
+            impact_parts.append(" inflation data")
+        if "rate hike" in reasons or "rate cut" in reasons:
+            impact_parts.append(" interest rate decision")
+        if "war" in reasons or "geopolitic" in reasons:
+            impact_parts.append(" geopolitical development")
+
+        if impact_parts:
+            summary_parts.append("Market impact:" + "".join(impact_parts))
+
+        # Add bullish/bearish inference
+        bullish_keywords = ["rise", "gain", "up", "increase", "positive", "bull", "upgrade"]
+        bearish_keywords = ["fall", "drop", "down", "decrease", "negative", "bear", "downgrade"]
+        low_title = clean_title.lower()
+        low_desc = clean_desc.lower()
+
+        has_bullish = any(kw in low_title or kw in low_desc for kw in bullish_keywords)
+        has_bearish = any(kw in low_title or kw in low_desc for kw in bearish_keywords)
+
+        if has_bullish and has_bearish:
+            impact_label = " mixed signals"
+        elif has_bullish:
+            impact_label = " (bullish)"
+        elif has_bearish:
+            impact_label = " (bearish)"
+        else:
+            impact_label = ""
+
+        if impact_label:
+            summary_parts.append(f"Trend:{impact_label}")
+
+        summary = ". ".join(summary_parts)
+        return summary if summary else clean_title
 

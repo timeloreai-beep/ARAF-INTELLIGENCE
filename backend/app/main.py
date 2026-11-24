@@ -34,6 +34,8 @@ from .routers import (
     preferences,
     risk,
     scanner,
+    ai_guardian,
+    ipo,
 )
 from .dependencies import risk_guardian
 from .services.news import NewsEngine
@@ -328,7 +330,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health.router)
+app.include_router(ai_guardian.router)
+app.include_router(ipo.router)
 app.include_router(legacy.router)
 app.include_router(automation.router)
 app.include_router(auth.router)

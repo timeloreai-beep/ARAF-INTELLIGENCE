@@ -583,11 +583,17 @@ def _lifecycle(ctx: dict[str, Any]) -> dict[str, Any]:
             else parsed.astimezone(ZoneInfo("Asia/Kolkata"))
         )
     minute_of_day = now.hour * 60 + now.minute
-    if minute_of_day >= 910:
+    if minute_of_day >= 915:
+        if minute_of_day >= 930:
+            return _result(
+                "ENG17_TRADE_LIFECYCLE", ctx, status="FAIL", reason="MIS_CUTOFF_REACHED",
+                score_delta=-10, evidence="Past 3:30 PM IST MIS entry cutoff",
+                explain_bn="দুপুর ৩:৩০-র পর নতুন ইন্ট্রাডে এনTRY ব্লক।",
+            )
         return _result(
-            "ENG17_TRADE_LIFECYCLE", ctx, status="FAIL", reason="MIS_CUTOFF_REACHED",
-            score_delta=-10, evidence="Past 3:10 PM IST MIS entry cutoff",
-            explain_bn="দুপুর ৩:১০-এর পর নতুন ইন্ট্রাডে এন্ট্রি ব্লক।",
+            "ENG17_TRADE_LIFECYCLE", ctx, status="WARN", reason="MIS_SQUAREOFF_WARN",
+            score_delta=-5, evidence="Past 3:15 PM IST MIS square-off warning",
+            explain_bn="দুপুর ৩:১৫-র পর ইন্ট্রেডে স্কয়ার-অফ শুরু।",
         )
     return _result(
         "ENG17_TRADE_LIFECYCLE", ctx, status="PASS", reason="LIFECYCLE_OK",

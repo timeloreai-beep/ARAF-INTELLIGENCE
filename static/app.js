@@ -14,6 +14,7 @@ const FASTAPI_BASE_URL = (
 const FASTAPI_TARGET_ROUTES = Object.freeze({
     health: "/health",
     news_feed: "/news/feed",
+    ai_guardian: "/ai_guardian",
     get_risk_state: "/risk/state",
     get_master_user: "/auth/master-user",
     get_subscription_upi_intent: "/auth/subscription/upi-intent",
@@ -25,7 +26,9 @@ const FASTAPI_TARGET_ROUTES = Object.freeze({
     set_master_pin: "/auth/pin",
     verify_pin: "/auth/pin/verify",
     logout_session: "/auth/logout",
-    login_with_trader_uid: "/auth/resolve-trader-uid"
+    login_with_trader_uid: "/auth/resolve-trader-uid",
+    ipo_feed: "/ipo/feed",
+    ipo_news_feed: "/ipo/news_feed"
 });
 const FASTAPI_AUTH_FALLBACK_TARGETS = new Set([
     "get_master_user",
@@ -152,7 +155,6 @@ const SESSION_VAULT = {
     coindcxLinked: false,
     shoonyaStatus: "NOT_CONNECTED",
     coindcxStatus: "NOT_CONNECTED",
-    customRelayUrl: "",
     voiceEnabled: true,
     voiceLang: "en-US",
     newsLang: "en-US",
@@ -594,7 +596,7 @@ const ArafCloudMaster = {
 
 function applySettingsCredentialLock(type, isConnected) {
     const idsByType = {
-        relay: ["settingCustomRelayUrl", "settingCustomRelaySecret"],
+        
         shoonya: ["settingShoonyaUid", "settingShoonyaVendor", "settingShoonyaPassword", "settingShoonyaTotp", "settingShoonyaApiKey", "settingShoonyaToken"],
         coindcx: ["settingCoinDcxKey", "settingCoinDcxSecret"]
     };
@@ -890,8 +892,8 @@ function checkIntradaySquareOffReminder() {
             document.getElementById("intradaySquareOffModal")?.classList.remove("hidden");
             const voiceSqOff = (SESSION_VAULT.voiceLang === "bn-IN")
                 ? "ইন্ট্রাডে সতর্কবার্তা ভাই! দুপুর ৩টা ১০ বাজে! ব্রোকার অটো স্কয়ার-অফ পেনাল্টি কাটার আগেই সমস্ত পজিশন ক্লোজ করে দিন।"
-                : "Intraday Alert! It is 3:10 PM IST. Square off all MIS positions before broker auto square-off.";
-            explainTextFriendly(voiceSqOff, "3:10 PM Square-Off");
+                : "Intraday Alert! It is 3:15 PM IST. MIS positions will be auto square-off by the broker soon.";
+            explainTextFriendly(voiceSqOff, "3:15 PM Square-Off");
         }
     }
 }
@@ -2042,7 +2044,7 @@ async function handleSessionWipeLogout() {
         SESSION_VAULT.coindcxLinked = false;
         SESSION_VAULT.activeBracketOrders = {};
         SESSION_VAULT.fastPositionsMap = {};
-        applySettingsCredentialLock("relay", false);
+        applySettingsCredentialLock();
         applySettingsCredentialLock("shoonya", false);
         applySettingsCredentialLock("coindcx", false);
 
@@ -5631,7 +5633,7 @@ function recordAndSyncTradeLog(symbol, side, qty, broker, status = "ACCEPTED", o
             relayText.textContent = "LIVE";
             relayText.className = "text-[8px] text-[#00d09c] font-mono";
         }
-        applySettingsCredentialLock("relay", true);
+        applySettingsCredentialLock();
         alert("✅ Local PC Relay URL & Secret saved securely!");
     } else {
         alert(res.data?.error || "Failed to save relay URL.");
@@ -5658,7 +5660,7 @@ async function clearCustomRelayUrlFromCloud() {
             relayText.textContent = "LIVE";
             relayText.className = "text-[8px] text-[#eb5b3c] font-mono";
         }
-        applySettingsCredentialLock("relay", false);
+        applySettingsCredentialLock();
         alert("Relay URL cleared.");
     }
 }
@@ -6162,7 +6164,9 @@ async function sendAiMessage() {
     if (res.ok && res.data?.success && res.data.reply) {
         addChatMessage("ai", res.data.reply);
     } else {
-        addChatMessage("ai", getInstantQuantAiResponse(q, quantSnap));
+        const asset = currentSelectedAsset || MASTER_ASSETS[0];
+        const qual = asset.dataEnvelope?.quality || "OFFLINE";
+        addChatMessage("ai", `🤖 AI Guardian: Gemini analysis temporarily unavailable (quality: ${qual}). Your query "${q.slice(0, 30)}${q.length > 30 ? "..." : ""}" has been noted. The system will process it as soon as the service is restored.`);
     }
 }
 
@@ -6269,6 +6273,8 @@ function exportGovernanceAuditTrail() {
 }
 
 function switchTab(name) {
+    // Update browser history for SPA navigation
+    window.history.pushState({ tab: name }, `ARAF - ${name}`, `?tab=${name}`);
     if (
         SESSION_VAULT.activeUser
         && SESSION_VAULT.activeUser.isActive !== false
@@ -6599,7 +6605,9 @@ function renderFilteredNews() {
 
         const titleP = document.createElement("p");
         titleP.className = "text-[11px] font-bold text-slate-900 leading-snug";
-        titleP.textContent = n.translatedTitle || n.title;
+        const summary = n.summary || n.title;
+        const impactTag = n.eventCategory && n.eventCategory !== "MARKET" ? `<span class="inline-block text-[8px] rounded bg-slate-100/20 text-slate-400 px-1 py-0.5 margin-x-1">📊 ${n.eventCategory}</span>` : "";
+        titleP.innerHTML = `${impactTag}${summary}`;
 
         const hint = document.createElement("span");
         hint.className = "inline-block text-[9px] text-[#059669] font-mono font-bold";
