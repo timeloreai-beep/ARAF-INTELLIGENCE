@@ -42,7 +42,7 @@ from .routers import (
 from .dependencies import risk_guardian
 from .services.news import NewsEngine
 from .services.telegram_payments import telegram_callback_worker
-from .services.telegram_bot import get_telegram_bot_service
+from .services.telegram_bot import get_telegram_bot_service, _telegram_bot_service
 from .services.automation import OpportunityHub
 from .services.ai_swarm import get_ai_swarm_service
 from .services.price_feeds import get_price_feed_manager
@@ -353,12 +353,10 @@ async def lifespan(app: FastAPI):
         and get_settings().telegram_admin_chat_id
         else None
     )
-    # Initialize Telegram bot service and add webhook route
+    # Initialize Telegram bot service and add webhook routes directly to main app
+    telegram_bot_service = None
     if get_settings().telegram_bot_token:
         telegram_bot_service = get_telegram_bot_service(app)
-        app.include_router(telegram_bot_service.app, prefix="/telegram/bot", tags=["telegram_bot"])
-    else:
-        telegram_bot_service = None
     try:
         yield
     finally:

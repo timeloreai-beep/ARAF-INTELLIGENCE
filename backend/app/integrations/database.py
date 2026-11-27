@@ -103,8 +103,8 @@ class DatabaseHub:
         self.backup_engine: AsyncEngine | None = None
         self.sessions: async_sessionmaker | None = None
         self.backup_sessions: async_sessionmaker | None = None
-        self.redis: RedisManager | None = None
-        self.firebase: FirebaseManager | None = None
+        self.redis: RedisCache | None = None
+        self.firebase: FirebaseHub | None = None
 
         if self.primary_url:
             self.engine = create_async_engine(
@@ -123,11 +123,11 @@ class DatabaseHub:
                 self.backup_engine, expire_on_commit=False
             )
         # Initialize Redis if configured
-        from .redis import RedisManager
-        self.redis = RedisManager()
+        from .redis import RedisCache
+        self.redis = RedisCache()
         # Initialize Firebase if configured
-        from .firebase import FirebaseManager
-        self.firebase = FirebaseManager()
+        from .firebase import FirebaseHub
+        self.firebase = FirebaseHub()
 
     @property
     def enabled(self) -> bool:
