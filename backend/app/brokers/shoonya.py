@@ -6,11 +6,14 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import math
+import random
 import time
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Any
 
 import httpx
@@ -22,6 +25,16 @@ from ..integrations.redis import RedisCache
 from ..security import decrypt_broker_session, encrypt_broker_session
 from .base import BrokerAdapter, BrokerOrderResult, BrokerQuote
 
+logger = logging.getLogger(__name__)
+
+
+class ReconnectState(Enum):
+    IDLE = "idle"
+    BACKING_OFF = "backing_off"
+    RECONNECTING = "reconnecting"
+    CONFLICT_DETECTED = "conflict_detected"
+    MAX_RETRIES_EXCEEDED = "max_retries_exceeded"
+
 
 class ShoonyaAdapter(BrokerAdapter):
     BASE_URL = "https://api.shoonya.com/NorenWClientTP"
@@ -32,6 +45,21 @@ class ShoonyaAdapter(BrokerAdapter):
     }
     _option_master_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
     _option_master_lock = asyncio.Lock()
+
+    MAX_RECONNECT_ATTEMPTS = 5
+    BASE_BACKOFF_SECONDS = 30
+    MAX_BACKOFF_SECONDS = 300
+    CONFLICT_DETECTION_TERMS = (
+        "session",
+        "susertoken",
+        "jkey",
+        "login",
+        "invalid",
+        "expired",
+        "already logged",
+        "another session",
+        "force logout",
+    )
 
     def __init__(
         self,
@@ -48,11 +76,64 @@ class ShoonyaAdapter(BrokerAdapter):
         self.session_token: str | None = None
         self.transport = transport
         self.redis = redis
+        self._reconnect_state = ReconnectState.IDLE
+        self._reconnect_attempt = 0
+        self._last_conflict_time: float | None = None
+        self._login_lock = asyncio.Lock()
+        self._session_invalidated = False
 
     def _totp(self) -> str:
         if not self.totp_secret:
             raise RuntimeError("SHOONYA_TOTP_SECRET is required; TOTP secret is never hard-coded")
         return pyotp.TOTP(self.totp_secret).now()
+
+    @property
+    def reconnect_state(self) -> ReconnectState:
+        return self._reconnect_state
+
+    @property
+    def reconnect_attempt(self) -> int:
+        return self._reconnect_attempt
+
+    @property
+    def is_session_invalidated(self) -> bool:
+        return self._session_invalidated
+
+    def _calculate_backoff(self) -> float:
+        attempt = self._reconnect_attempt
+        base = self.BASE_BACKOFF_SECONDS
+        max_backoff = self.MAX_BACKOFF_SECONDS
+        exponential = min(base * (2 ** attempt), max_backoff)
+        jitter = random.uniform(0, exponential * 0.1)
+        return exponential + jitter
+
+    def _reset_reconnect_state(self) -> None:
+        self._reconnect_state = ReconnectState.IDLE
+        self._reconnect_attempt = 0
+        self._session_invalidated = False
+
+    def _set_conflict_detected(self) -> None:
+        self._reconnect_state = ReconnectState.CONFLICT_DETECTED
+        self._last_conflict_time = time.monotonic()
+        self._session_invalidated = True
+        logger.warning("Shoonya session conflict detected - external login invalidated session")
+
+    def _enter_backoff(self) -> float:
+        self._reconnect_state = ReconnectState.BACKING_OFF
+        backoff = self._calculate_backoff()
+        logger.info("Shoonya entering backoff for %.1fs (attempt %d/%d)", backoff, self._reconnect_attempt + 1, self.MAX_RECONNECT_ATTEMPTS)
+        return backoff
+
+    def _enter_reconnecting(self) -> None:
+        self._reconnect_state = ReconnectState.RECONNECTING
+
+    def _increment_reconnect_attempt(self) -> bool:
+        self._reconnect_attempt += 1
+        if self._reconnect_attempt >= self.MAX_RECONNECT_ATTEMPTS:
+            self._reconnect_state = ReconnectState.MAX_RETRIES_EXCEEDED
+            logger.error("Shoonya max reconnect attempts (%d) exceeded", self.MAX_RECONNECT_ATTEMPTS)
+            return False
+        return True
 
     async def login(self, *, force: bool = False) -> dict[str, Any]:
         token_key = f"broker:shoonya:session:{self.user_id or 'unconfigured'}"
@@ -60,16 +141,17 @@ class ShoonyaAdapter(BrokerAdapter):
         lock_token = uuid.uuid4().hex
         owns_lock = False
         if self.session_token and not force:
+            self._reset_reconnect_state()
             return {"stat": "Ok", "susertoken": self.session_token, "cached": True}
         if self.redis and self.redis.enabled and not force:
             cached_token = await self.redis.get(token_key)
             if cached_token:
                 try:
                     self.session_token = decrypt_broker_session(cached_token)
+                    self._reset_reconnect_state()
+                    return {"stat": "Ok", "susertoken": self.session_token, "cached": True}
                 except ValueError:
                     await self.redis.delete(token_key)
-                else:
-                    return {"stat": "Ok", "susertoken": self.session_token, "cached": True}
         if self.redis and self.redis.enabled:
             owns_lock = await self.redis.set_if_absent(lock_key, lock_token, 30)
             if not owns_lock:
@@ -79,9 +161,10 @@ class ShoonyaAdapter(BrokerAdapter):
                     if cached_token:
                         try:
                             self.session_token = decrypt_broker_session(cached_token)
+                            self._reset_reconnect_state()
+                            return {"stat": "Ok", "susertoken": self.session_token, "cached": True}
                         except ValueError:
                             continue
-                        return {"stat": "Ok", "susertoken": self.session_token, "cached": True}
                 raise RuntimeError("Shoonya login is already in progress")
 
         try:
@@ -118,8 +201,12 @@ class ShoonyaAdapter(BrokerAdapter):
         if not isinstance(data, dict):
             raise RuntimeError("Shoonya returned an invalid authentication response")
         if data.get("stat") != "Ok" or not data.get("susertoken"):
+            error_msg = str(data.get("emsg", "")).lower()
+            if any(term in error_msg for term in self.CONFLICT_DETECTION_TERMS):
+                self._set_conflict_detected()
             raise RuntimeError("Shoonya authentication failed; check broker credentials and TOTP")
         self.session_token = data["susertoken"]
+        self._reset_reconnect_state()
         if self.redis and self.redis.enabled:
             await self.redis.set(
                 token_key,
@@ -128,9 +215,48 @@ class ShoonyaAdapter(BrokerAdapter):
             )
         return data
 
+    async def smart_reconnect(self) -> bool:
+        if not self._session_invalidated and self._reconnect_state == ReconnectState.IDLE:
+            return True
+
+        async with self._login_lock:
+            if self.session_token and not self._session_invalidated:
+                return True
+
+            while self._reconnect_attempt < self.MAX_RECONNECT_ATTEMPTS:
+                self._enter_reconnecting()
+                try:
+                    token_key = f"broker:shoonya:session:{self.user_id or 'unconfigured'}"
+                    result = await self._authenticate_and_cache(token_key)
+                    if self.session_token:
+                        logger.info("Shoonya smart reconnect successful")
+                        return True
+                except RuntimeError as exc:
+                    error_msg = str(exc).lower()
+                    if any(term in error_msg for term in self.CONFLICT_DETECTION_TERMS):
+                        self._set_conflict_detected()
+                    if not self._increment_reconnect_attempt():
+                        break
+                    backoff = self._enter_backoff()
+                    logger.warning("Shoonya reconnect attempt %d failed: %s", self._reconnect_attempt, exc)
+                    await asyncio.sleep(backoff)
+                    continue
+                except (httpx.HTTPError, OSError) as exc:
+                    if not self._increment_reconnect_attempt():
+                        break
+                    backoff = self._enter_backoff()
+                    logger.warning("Shoonya reconnect attempt %d failed (network): %s", self._reconnect_attempt, exc)
+                    await asyncio.sleep(backoff)
+                    continue
+
+            return False
+
     async def get_quote(self, symbol: str, exchange: str) -> BrokerQuote | None:
-        if not self.session_token:
-            await self.login()
+        if not self.session_token or self._session_invalidated:
+            if self._session_invalidated:
+                await self.smart_reconnect()
+            else:
+                await self.login()
         payload = json.dumps({"uid": self.user_id, "exch": exchange, "token": symbol})
         data = await self._session_post("GetQuotes", payload)
         if not isinstance(data, dict):
@@ -206,8 +332,11 @@ class ShoonyaAdapter(BrokerAdapter):
             return [dict(row) for row in rows]
 
     async def search_instrument(self, symbol: str, exchange: str) -> dict[str, Any]:
-        if not self.session_token:
-            await self.login()
+        if not self.session_token or self._session_invalidated:
+            if self._session_invalidated:
+                await self.smart_reconnect()
+            else:
+                await self.login()
         payload = json.dumps({
             "uid": self.user_id,
             "exch": exchange,
@@ -241,8 +370,11 @@ class ShoonyaAdapter(BrokerAdapter):
             raise ValueError("Unsupported Shoonya candle interval")
         if not token.isdigit():
             raise ValueError("Shoonya instrument token must be numeric")
-        if not self.session_token:
-            await self.login()
+        if not self.session_token or self._session_invalidated:
+            if self._session_invalidated:
+                await self.smart_reconnect()
+            else:
+                await self.login()
         interval_minutes = self.CANDLE_INTERVALS[interval]
         now = datetime.now(timezone.utc)
         payload = json.dumps({
@@ -310,8 +442,11 @@ class ShoonyaAdapter(BrokerAdapter):
         return candles[-min(max(limit, 16), 500):]
 
     async def place_order(self, **kwargs: Any) -> BrokerOrderResult:
-        if not self.session_token:
-            await self.login()
+        if not self.session_token or self._session_invalidated:
+            if self._session_invalidated:
+                await self.smart_reconnect()
+            else:
+                await self.login()
         jdata = {
             "uid": self.user_id,
             "actid": self.user_id,
@@ -335,8 +470,11 @@ class ShoonyaAdapter(BrokerAdapter):
         )
 
     async def get_positions(self) -> list[dict[str, Any]]:
-        if not self.session_token:
-            await self.login()
+        if not self.session_token or self._session_invalidated:
+            if self._session_invalidated:
+                await self.smart_reconnect()
+            else:
+                await self.login()
         payload = json.dumps({"uid": self.user_id, "actid": self.user_id})
         data = await self._session_post("PositionBook", payload)
         if isinstance(data, dict):
@@ -345,6 +483,32 @@ class ShoonyaAdapter(BrokerAdapter):
             raise ValueError("Shoonya returned an invalid positions response")
         return data
 
+    async def get_balance(self) -> dict[str, Any]:
+        """Get Shoonya account balance/limits."""
+        if not self.session_token or self._session_invalidated:
+            if self._session_invalidated:
+                await self.smart_reconnect()
+            else:
+                await self.login()
+        payload = json.dumps({"uid": self.user_id, "actid": self.user_id})
+        data = await self._session_post("Limits", payload)
+        if isinstance(data, dict) and data.get("stat") != "Ok":
+            raise RuntimeError(f"Shoonya limits request failed: {data.get('emsg', 'Unknown error')}")
+        if not isinstance(data, list):
+            raise ValueError("Shoonya returned an invalid limits response")
+        # Shoonya returns a list with one element containing balance info
+        balance_data = data[0] if data else {}
+        return {
+            "cash": float(balance_data.get("cash", 0) or 0),
+            "margin": float(balance_data.get("margin", 0) or 0),
+            "available_margin": float(balance_data.get("avlbl_margin", balance_data.get("available_margin", 0)) or 0),
+            "used_margin": float(balance_data.get("used_margin", 0) or 0),
+            "span_margin": float(balance_data.get("span_margin", 0) or 0),
+            "exposure_margin": float(balance_data.get("exposure_margin", 0) or 0),
+            "linked": True,
+            "status": "LIVE",
+        }
+
     async def _session_post(
         self,
         endpoint: str,
@@ -352,7 +516,7 @@ class ShoonyaAdapter(BrokerAdapter):
         *,
         timeout: float = 12,
     ) -> Any:
-        for attempt in range(2):
+        for attempt in range(3):
             if not self.session_token:
                 await self.login()
             async with httpx.AsyncClient(timeout=timeout, transport=self.transport) as client:
@@ -364,13 +528,14 @@ class ShoonyaAdapter(BrokerAdapter):
             data = response.json()
             message = str(data.get("emsg", "")).lower() if isinstance(data, dict) else ""
             if (
-                attempt == 0
-                and isinstance(data, dict)
+                isinstance(data, dict)
                 and data.get("stat") != "Ok"
-                and any(term in message for term in ("session", "susertoken", "jkey", "login"))
+                and any(term in message for term in self.CONFLICT_DETECTION_TERMS)
             ):
-                self.session_token = None
-                await self.login(force=True)
-                continue
+                logger.warning("Shoonya session conflict detected on %s: %s", endpoint, message)
+                self._set_conflict_detected()
+                if await self.smart_reconnect():
+                    continue
+                raise RuntimeError("Shoonya smart reconnect failed after max attempts")
             return data
-        raise RuntimeError("Shoonya session refresh failed")
+        raise RuntimeError("Shoonya session refresh failed after retries")

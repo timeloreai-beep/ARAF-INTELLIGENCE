@@ -61,12 +61,16 @@ class RiskConfig(BaseModel):
     max_daily_loss_amount: float = Field(
         default=2500, ge=1, le=100_000_000, allow_inf_nan=False
     )
+    max_weekly_loss_amount: float = Field(
+        default=10000, ge=1, le=100_000_000, allow_inf_nan=False
+    )
     max_trades_per_day: int = Field(default=DEFAULT_MAX_DAILY_TRADES, ge=1, le=APEX_MAX_DAILY_SETUPS)
     max_per_trade_risk_pct: float = Field(default=2.0, ge=0.1, le=2)
 
 
 class RiskPnlSync(BaseModel):
     daily_pnl_inr: float = Field(allow_inf_nan=False)
+    weekly_pnl_inr: float | None = Field(default=None, allow_inf_nan=False)
 
 
 class OrderRequest(BaseModel):
@@ -302,3 +306,22 @@ class UserPreferencesPayload(BaseModel):
     news_lang: Literal["en-US", "bn-IN", "hi-IN", "gu-IN", "mr-IN", "ta-IN"] | None = None
     news_voice_digest_enabled: bool | None = None
     chart_timeframe: Literal["15s", "1m", "5m", "15m", "1h", "1d"] | None = None
+
+
+class GhostDeletionRequestItem(BaseModel):
+    request_id: str
+    user_id: str
+    email: str | None = None
+    trader_uid: str | None = None
+    status: str
+    requested_at: str
+    cancellation_window_ends_at: str | None = None
+
+
+class GhostDeletionRequestList(BaseModel):
+    items: list[GhostDeletionRequestItem]
+    total: int
+
+
+class GhostDeletionApproveRequest(BaseModel):
+    action: str = Field(pattern="^(APPROVE|REJECT)$")

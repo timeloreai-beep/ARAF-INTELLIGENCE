@@ -46,6 +46,27 @@ class AppUser(Base):
     subscription_expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    deletion_status: Mapped[str] = mapped_column(String(32), default="ACTIVE", index=True)
+    deletion_requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    deletion_approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    deletion_approved_by: Mapped[str] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class DeletionRequest(Base):
+    __tablename__ = "deletion_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    cancellation_window_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by: Mapped[str] = mapped_column(String(255), nullable=True)
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -60,6 +81,7 @@ class SubscriptionPaymentProof(Base):
     email: Mapped[str] = mapped_column(String(255), index=True)
     months: Mapped[int] = mapped_column(Integer)
     amount_inr: Mapped[float] = mapped_column(Numeric(12, 2))
+    utr: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
     proof_sha256: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
     telegram_message_id: Mapped[str] = mapped_column(String(64), nullable=True)
@@ -254,6 +276,23 @@ class AdminControl(Base):
     )
 
 
+class AutoTradeExecutionLog(Base):
+    __tablename__ = "auto_trade_execution_log"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    symbol: Mapped[str] = mapped_column(String(64))
+    side: Mapped[str] = mapped_column(String(8))
+    quantity: Mapped[float] = mapped_column(Numeric(38, 12))
+    entry_price: Mapped[float] = mapped_column(Numeric(38, 12))
+    stop_loss: Mapped[float] = mapped_column(Numeric(38, 12))
+    take_profit: Mapped[float] = mapped_column(Numeric(38, 12))
+    score: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32))
+    is_auto_trade: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
 class SystemConfiguration(Base):
     __tablename__ = "system_configurations"
 
@@ -363,5 +402,23 @@ class ReplicationOutbox(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
     delivered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BrokerVault(Base):
+    __tablename__ = "broker_vaults"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    broker: Mapped[str] = mapped_column(String(32), index=True)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )

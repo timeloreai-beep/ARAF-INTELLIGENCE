@@ -31,7 +31,7 @@ def _report(score=80, side="BUY"):
 def test_manual_alert_tiers_start_at_70_and_auto_trade_requires_90():
     async def run():
         hub = OpportunityHub()
-        await hub.set_settings("user-1", {"enabled": False, "dailyBudgetInr": 10_000})
+        await hub.set_settings("user-1", {"india_enabled": False, "dailyBudgetInr": 10_000})
         below_threshold = await hub.publish(
             subject="user-1", report=_report(69), trusted_feed=True,
             scanner_gate_passed=True, news_guard_active=False,
@@ -63,7 +63,7 @@ def test_manual_alert_tiers_start_at_70_and_auto_trade_requires_90():
         assert high_conviction["tierLabel"] == "High-Conviction Opportunity (80%+)"
         assert high_conviction["autoTradeEligible"] is False
 
-        await hub.set_settings("user-1", {"enabled": True, "dailyBudgetInr": 10_000})
+        await hub.set_settings("user-1", {"india_enabled": True, "dailyBudgetInr": 10_000})
         prime_while_on = await hub.publish(
             subject="user-1", report=_report(90), trusted_feed=True,
             scanner_gate_passed=True, news_guard_active=False,
@@ -449,6 +449,8 @@ def test_server_rejects_reenabling_auto_trade_under_risk_lock(monkeypatch):
         update_automation_settings,
     )
     from backend.app.services.risk import RiskGuardian
+    from backend.app.services.automation import OpportunityHub
+    from backend.app.services.risk_persistence import UserRiskState
 
     class FakeDatabase:
         enabled = True
@@ -462,14 +464,40 @@ def test_server_rejects_reenabling_auto_trade_under_risk_lock(monkeypatch):
         async def get_admin_control(self):
             return None
 
+        async def get_user_preferences(self, user_id):
+            return SimpleNamespace(preferences={"automation": {"india_enabled": False, "dailyBudgetInr": 10000, "allowedMarkets": "ALL"}})
+
+        async def upsert_user_preferences(self, user_id, preferences):
+            return SimpleNamespace(primary_applied=True, backup_applied=True)
+
     class FakeRedis:
         enabled = False
 
     async def load_settings(request, subject):
-        return {"enabled": False, "dailyBudgetInr": 10000, "allowedMarkets": "ALL"}
+        return {"india_enabled": False, "dailyBudgetInr": 10000, "allowedMarkets": "ALL"}
 
     monkeypatch.setattr(
         "backend.app.routers.automation._load_persisted_settings", load_settings
+    )
+
+    # Mock load_risk_state to return a hard-locked state
+    async def mock_load_risk_state(request, subject, guardian):
+        return UserRiskState(
+            capital_inr=100000,
+            max_daily_loss_amount=2500,
+            max_per_trade_risk_pct=2.0,
+            max_trades_per_day=3,
+            daily_pnl_inr=-2500,
+            trades_count=3,
+            trading_day=guardian.current_trading_day(),
+            is_hard_locked=True,
+            locked_reason="DAILY_LOSS_LIMIT_BREACHED",
+            risk_lock_expires_at=None,
+            daily_loss_lock_started_at=None,
+        )
+
+    monkeypatch.setattr(
+        "backend.app.routers.automation.load_risk_state", mock_load_risk_state
     )
 
     async def run():
@@ -482,12 +510,13 @@ def test_server_rejects_reenabling_auto_trade_under_risk_lock(monkeypatch):
                     database=FakeDatabase(),
                     redis=FakeRedis(),
                     risk_guardian=guardian,
+                    opportunity_hub=OpportunityHub(),
                 )
             )
         )
         with pytest.raises(HTTPException) as error:
             await update_automation_settings(
-                AutomationSettingsPayload(enabled=True),
+                AutomationSettingsPayload(india_enabled=True),
                 request,
                 subject="locked-toggle-user",
             )

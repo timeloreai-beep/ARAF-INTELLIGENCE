@@ -441,6 +441,8 @@ def test_coindcx_login_makes_only_a_signed_read_probe(monkeypatch):
 
     def broker_response(request):
         requests.append(request)
+        if "public.coindcx.com" in str(request.url):
+            return httpx.Response(200, json={"prices": {}})
         return httpx.Response(200, json=[])
 
     adapter = coindcx.CoinDCXAdapter(transport=httpx.MockTransport(broker_response))
@@ -448,10 +450,13 @@ def test_coindcx_login_makes_only_a_signed_read_probe(monkeypatch):
 
     assert result["linked"] is True
     assert result["positions_count"] == 0
-    assert len(requests) == 1
-    assert requests[0].url.path.endswith("/positions")
-    assert requests[0].headers["X-AUTH-APIKEY"] == settings.coindcx_api_key
-    assert requests[0].headers.get("X-AUTH-SIGNATURE")
+    assert len(requests) == 2
+    # First request is public API connectivity test
+    assert "public.coindcx.com" in str(requests[0].url)
+    # Second request is signed positions call
+    assert requests[1].url.path.endswith("/positions")
+    assert requests[1].headers["X-AUTH-APIKEY"] == settings.coindcx_api_key
+    assert requests[1].headers.get("X-AUTH-SIGNATURE")
 
 
 def test_shoonya_login_route_stores_session_without_exposing_token(monkeypatch):

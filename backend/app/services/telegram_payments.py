@@ -41,25 +41,28 @@ async def send_payment_proof(
     filename: str,
     amount_inr: float,
     payment_id: str,
+    utr: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     token = settings.telegram_bot_token.strip()
     chat_id = settings.telegram_admin_chat_id.strip()
-    if not token or not chat_id:
+    channel_id = getattr(settings, "telegram_admin_channel_id", "").strip()
+    if not token or (not chat_id and not channel_id):
         raise RuntimeError("Telegram payment bridge is not configured")
 
     if len(f"APPROVE|{payment_id}") > 64:
         raise RuntimeError("Payment callback identifier is too long")
 
+    utr_line = f"\nUTR/URN: {utr}" if utr else ""
     caption = (
         "\u2705 ARAF subscription payment proof\n"
         f"User Email: {email}\n"
         f"User ID: {subject}\n"
         f"Months: {months}\n"
-        f"Amount: INR {amount_inr:.2f}"
+        f"Amount: INR {amount_inr:.2f}{utr_line}"
     )
     data = {
-        "chat_id": chat_id,
+        "chat_id": channel_id if channel_id else chat_id,
         "caption": caption,
         "reply_markup": {
             "inline_keyboard": [[
@@ -77,7 +80,7 @@ async def send_payment_proof(
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(
             f"{_API_BASE}/bot{token}/sendPhoto",
-            data={"chat_id": chat_id, "caption": caption},
+            data={"chat_id": channel_id if channel_id else chat_id, "caption": caption},
             files={"photo": (filename, image_bytes, "application/octet-stream")},
         )
         response.raise_for_status()
@@ -89,7 +92,7 @@ async def send_payment_proof(
         edit_response = await client.post(
             f"{_API_BASE}/bot{token}/editMessageReplyMarkup",
             json={
-                "chat_id": chat_id,
+                "chat_id": channel_id if channel_id else chat_id,
                 "message_id": message["message_id"],
                 "reply_markup": data["reply_markup"],
             },
@@ -105,9 +108,14 @@ async def telegram_callback_worker(app) -> None:
     settings = get_settings()
     token = settings.telegram_bot_token.strip()
     chat_id = settings.telegram_admin_chat_id.strip()
-    if not token or not chat_id:
+    channel_id = getattr(settings, "telegram_admin_channel_id", "").strip()
+    if not token or (not chat_id and not channel_id):
         logger.info("Telegram payment polling is disabled: credentials are not configured")
         return
+
+    allowed_chat_ids = {chat_id} if chat_id else set()
+    if channel_id:
+        allowed_chat_ids.add(channel_id)
 
     offset = None
     async with httpx.AsyncClient(timeout=25) as client:
@@ -134,7 +142,7 @@ async def telegram_callback_worker(app) -> None:
                     callback_chat = str(
                         callback.get("message", {}).get("chat", {}).get("id", "")
                     )
-                    if callback_chat != chat_id:
+                    if callback_chat not in allowed_chat_ids:
                         continue
                     parsed = parse_callback(str(callback.get("data", "")))
                     if not parsed:
@@ -183,6 +191,19 @@ async def telegram_callback_worker(app) -> None:
                                         subject,
                                         months,
                                     )
+                                    # Send push notification for instant unlock
+                                    try:
+                                        if hasattr(app.state, "firebase") and app.state.firebase.enabled:
+                                            await app.state.firebase.send_to_subject(
+                                                subject,
+                                                {
+                                                    "title": "Subscription Approved ✅",
+                                                    "body": f"Your {months}-month Pro subscription is now active. Tap to open Pro Desk.",
+                                                    "data": {"type": "subscription_approved", "months": str(months)},
+                                                }
+                                            )
+                                    except Exception:
+                                        logger.warning("Failed to send push notification for subscription approval")
                                     message = f"Approved: {months}-month subscription activated."
                                 else:
                                     user = await app.state.database.get_app_user(subject)

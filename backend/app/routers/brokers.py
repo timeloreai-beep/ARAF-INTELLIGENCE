@@ -16,6 +16,7 @@ from pymongo.errors import PyMongoError
 from ..brokers.coindcx import CoinDCXAdapter
 from ..brokers.shoonya import ShoonyaAdapter
 from ..dependencies import current_subject
+from ..models import BrokerVault
 from ..security import decrypt_broker_session, encrypt_broker_session
 from ..services.risk_persistence import is_persistence_degraded
 
@@ -30,6 +31,26 @@ class ShoonyaQuoteRequest(BaseModel):
 
 class CoinDCXQuoteRequest(BaseModel):
     symbol: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_/-]+$")
+
+
+class BrokerVaultSaveRequest(BaseModel):
+    broker: str = Field(pattern=r"^(SHOONYA|COINDCX)$")
+    payload: dict
+
+
+class ShoonyaAutoLoginRequest(BaseModel):
+    uid: str | None = None
+    vendorCode: str | None = None
+    password: str | None = None
+    factor2: str | None = None
+    apiKey: str | None = None
+
+
+class BrokerVaultStatusResponse(BaseModel):
+    broker: str
+    linked: bool
+    status: str
+    updated_at: str | None = None
 
 
 def _quote_dict(quote, requested_symbol: str) -> dict:
@@ -222,6 +243,163 @@ async def _quote_response(request: Request, subject: str, record: dict, cache_ke
         "quote": record,
         "persistence": persistence,
         "persistence_degraded": failed,
+    }
+
+
+@router.post("/vault/save")
+async def save_broker_vault(
+    payload: BrokerVaultSaveRequest,
+    request: Request,
+    subject: str = Depends(current_subject),
+) -> dict:
+    await _require_approved_broker_user(request, subject)
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="Vault storage unavailable")
+    try:
+        encrypted = encrypt_broker_session(str(payload.payload))
+        status = await database.upsert_broker_vault(subject, payload.broker, encrypted)
+        if not status.primary_applied and not status.backup_applied:
+            raise HTTPException(status_code=503, detail="Failed to persist broker vault")
+        return {
+            "success": True,
+            "linked": True,
+            "broker": payload.broker,
+            "persistence": status.as_dict(),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid vault payload") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("Broker vault save failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Could not save broker vault") from exc
+
+
+@router.get("/vault/status")
+async def get_broker_vault_status(
+    request: Request,
+    subject: str = Depends(current_subject),
+) -> dict:
+    await _require_approved_broker_user(request, subject)
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="Vault storage unavailable")
+    shoonya_vault = await database.get_broker_vault(subject, "SHOONYA")
+    coindcx_vault = await database.get_broker_vault(subject, "COINDCX")
+    return {
+        "success": True,
+        "vaults": [
+            BrokerVaultStatusResponse(
+                broker="SHOONYA",
+                linked=shoonya_vault is not None,
+                status=shoonya_vault.status if shoonya_vault else "empty",
+                updated_at=shoonya_vault.updated_at.isoformat() if shoonya_vault and shoonya_vault.updated_at else None,
+            ).model_dump(),
+            BrokerVaultStatusResponse(
+                broker="COINDCX",
+                linked=coindcx_vault is not None,
+                status=coindcx_vault.status if coindcx_vault else "empty",
+                updated_at=coindcx_vault.updated_at.isoformat() if coindcx_vault and coindcx_vault.updated_at else None,
+            ).model_dump(),
+        ],
+    }
+
+
+@router.post("/vault/delete")
+async def delete_broker_vault(
+    request: Request,
+    subject: str = Depends(current_subject),
+    broker: str = ...,
+) -> dict:
+    await _require_approved_broker_user(request, subject)
+    if broker not in {"SHOONYA", "COINDCX"}:
+        raise HTTPException(status_code=400, detail="Invalid broker")
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="Vault storage unavailable")
+    status = await database.delete_broker_vault(subject, broker)
+    if not status.primary_applied and not status.backup_applied:
+        raise HTTPException(status_code=503, detail="Failed to delete broker vault")
+    return {"success": True, "broker": broker}
+
+
+@router.post("/shoonya/auto-login")
+async def shoonya_auto_login(
+    request: Request,
+    body: ShoonyaAutoLoginRequest | None = None,
+    subject: str = Depends(current_subject),
+) -> dict:
+    await _require_approved_broker_user(request, subject)
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="Vault storage unavailable")
+    
+    # If credentials provided, save them to vault first
+    if body and body.uid and body.password and body.factor2:
+        payload = {
+            "shoonyaUid": body.uid.strip().upper(),
+            "shoonyaToken": "",  # Will be populated after login
+            "shoonyaPwd": body.password,
+            "shoonyaFactor2": body.factor2,
+            "shoonyaVendorCode": body.vendorCode.strip().upper() if body.vendorCode else "",
+            "shoonyaApiKey": body.apiKey.strip() if body.apiKey else "",
+        }
+        encrypted = encrypt_broker_session(str(payload))
+        await database.upsert_broker_vault(subject, "SHOONYA", encrypted)
+    
+    vault = await database.get_broker_vault(subject, "SHOONYA")
+    if not vault:
+        raise HTTPException(status_code=404, detail="Shoonya vault not configured")
+    try:
+        decrypted = decrypt_broker_session(vault.encrypted_payload)
+        vault_data = eval(decrypted) if isinstance(decrypted, str) else decrypted
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Failed to decrypt vault") from exc
+    redis = request.app.state.redis
+    if not redis.enabled:
+        raise HTTPException(status_code=503, detail="Broker session storage unavailable")
+    adapter = ShoonyaAdapter(redis=redis)
+    # Use credentials from vault if available
+    if vault_data.get("shoonyaPwd") and vault_data.get("shoonyaFactor2"):
+        adapter.user_id = vault_data.get("shoonyaUid", adapter.user_id)
+        adapter.password = vault_data.get("shoonyaPwd")
+        adapter.factor2 = vault_data.get("shoonyaFactor2")
+        adapter.vendor_code = vault_data.get("shoonyaVendorCode", adapter.vendor_code)
+        adapter.api_key = vault_data.get("shoonyaApiKey", adapter.api_key)
+    try:
+        data = await adapter.login()
+        if not adapter.session_token:
+            raise RuntimeError("Shoonya did not issue a session token")
+        # Update vault with session token
+        if vault_data.get("shoonyaToken") != adapter.session_token:
+            vault_data["shoonyaToken"] = adapter.session_token
+            encrypted = encrypt_broker_session(str(vault_data))
+            await database.upsert_broker_vault(subject, "SHOONYA", encrypted)
+        await redis.set_json(
+            f"broker:session:shoonya:{subject}",
+            {
+                "user_id": adapter.user_id,
+                "session_token": encrypt_broker_session(adapter.session_token),
+            },
+            ttl_seconds=3600,
+        )
+        # Set Shoonya session in price feed manager for 1s polling
+        if hasattr(request.app.state, "price_feed_manager"):
+            request.app.state.price_feed_manager.set_shoonya_session(adapter.user_id, adapter.session_token)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("Shoonya auto-login transport failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Shoonya login request failed") from exc
+    except (RedisError, ValueError) as exc:
+        logger.warning("Shoonya session storage failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Could not store Shoonya session") from exc
+    return {
+        "success": True,
+        "linked": True,
+        "uname": str(data.get("uname") or adapter.user_id),
+        "expiresInSeconds": 3600,
     }
 
 
@@ -478,4 +656,66 @@ async def test_coindcx_positions(
         "positions": positions,
         "persistence": persistence,
         "persistence_degraded": is_persistence_degraded(persistence),
+    }
+
+
+@router.get("/balance/shoonya")
+async def get_shoonya_balance(
+    request: Request,
+    subject: str = Depends(current_subject),
+) -> dict:
+    await _require_approved_broker_user(request, subject)
+    redis = request.app.state.redis
+    if not redis.enabled:
+        raise HTTPException(status_code=503, detail="Broker session storage unavailable")
+    adapter = ShoonyaAdapter(redis=redis)
+    try:
+        # Try to restore session from cache
+        cached = await redis.get_json(f"broker:session:shoonya:{subject}")
+        if (
+            isinstance(cached, dict)
+            and cached.get("user_id") == adapter.user_id
+            and isinstance(cached.get("session_token"), str)
+        ):
+            adapter.session_token = _decrypt_broker_session(cached["session_token"])
+        
+        balance = await adapter.get_balance()
+        await _cache_shoonya_session(request, subject, adapter)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("Shoonya balance request failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Shoonya balance request failed") from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="Shoonya returned invalid balance data") from exc
+    except RedisError as exc:
+        logger.warning("Shoonya session cache unavailable: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Shoonya session cache unavailable") from exc
+    return {
+        "success": True,
+        "read_only": True,
+        "balance": balance,
+    }
+
+
+@router.get("/balance/coindcx")
+async def get_coindcx_balance(
+    request: Request,
+    subject: str = Depends(current_subject),
+) -> dict:
+    await _require_approved_broker_user(request, subject)
+    try:
+        adapter = CoinDCXAdapter()
+        balance = await adapter.get_balance()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("CoinDCX balance request failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="CoinDCX balance request failed") from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="CoinDCX returned invalid balance data") from exc
+    return {
+        "success": True,
+        "read_only": True,
+        "balance": balance,
     }

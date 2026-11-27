@@ -28,7 +28,13 @@ const FASTAPI_TARGET_ROUTES = Object.freeze({
     logout_session: "/auth/logout",
     login_with_trader_uid: "/auth/resolve-trader-uid",
     ipo_feed: "/ipo/feed",
-    ipo_news_feed: "/ipo/news_feed"
+    ipo_news_feed: "/ipo/news_feed",
+    save_broker_vault: "/brokers/vault/save",
+    get_broker_vault_status: "/brokers/vault/status",
+    delete_broker_vault: "/brokers/vault/delete",
+    shoonya_auto_login: "/brokers/shoonya/auto-login",
+    shoonya_balance: "/brokers/balance/shoonya",
+    coindcx_balance: "/brokers/balance/coindcx"
 });
 const FASTAPI_AUTH_FALLBACK_TARGETS = new Set([
     "get_master_user",
@@ -196,6 +202,9 @@ let currentSelectedAsset = null;
 let binanceWs = null;
 let binanceReconnectTimer = null;
 let binanceReconnectAttempts = 0;
+let backendPriceWs = null;
+let backendPriceWsReconnectTimer = null;
+let backendPriceWsReconnectAttempts = 0;
 let isServerOtpVerifiedThisSession = false;
 let currentNiftyPrice = 0;
 let activeNewsTab = "stock_only";
@@ -222,11 +231,19 @@ let selectedCryptoLeverage = 1;
 
 const LIVE_L2_DEPTH_MAP = {};
 
-const NSE_TRADING_HOLIDAYS = [
-    "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31", "2026-04-03",
-    "2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26", "2026-09-14",
-    "2026-10-02", "2026-10-20", "2026-11-10", "2026-11-24", "2026-12-25"
-];
+let NSE_TRADING_HOLIDAYS = [];
+
+async function loadNseHolidays() {
+    try {
+        const res = await fastApiRequest("/market/holidays");
+        if (res.ok && res.data) {
+            const holidays = res.data;
+            NSE_TRADING_HOLIDAYS = Object.values(holidays).flat();
+        }
+    } catch (e) {
+        console.warn("Failed to load NSE holidays:", e);
+    }
+}
 
 const CANONICAL_INSTRUMENTS = {
     NIFTY:      { broker: "SHOONYA", exchange: "NFO", segment: "FUT", lotSize: 65, tickSize: 0.05, isDerivative: true, supportsShort: true, token: "26000" },
@@ -891,7 +908,7 @@ function checkIntradaySquareOffReminder() {
             playOpportunitySonarBeep("SELL");
             document.getElementById("intradaySquareOffModal")?.classList.remove("hidden");
             const voiceSqOff = (SESSION_VAULT.voiceLang === "bn-IN")
-                ? "ইন্ট্রাডে সতর্কবার্তা ভাই! দুপুর ৩টা ১০ বাজে! ব্রোকার অটো স্কয়ার-অফ পেনাল্টি কাটার আগেই সমস্ত পজিশন ক্লোজ করে দিন।"
+                ? "Intraday alert! 3:10 PM - close all positions before broker auto square-off penalty."
                 : "Intraday Alert! It is 3:15 PM IST. MIS positions will be auto square-off by the broker soon.";
             explainTextFriendly(voiceSqOff, "3:15 PM Square-Off");
         }
@@ -971,6 +988,15 @@ async function refreshSubscriptionStatus() {
     SESSION_VAULT.savedCloudUser = result.fullData;
     SESSION_VAULT.activeUser = profile;
     updateSubscriptionStatusUi();
+    
+    // Check for account deletion status first
+    if (profile.deletion_status === "DELETION_PENDING") {
+        if (subscriptionStatusPollTimer) clearInterval(subscriptionStatusPollTimer);
+        subscriptionStatusPollTimer = null;
+        showAccountDeletionPendingModal();
+        return false;
+    }
+    
     if (profile.isActive === false) {
         if (subscriptionStatusPollTimer) clearInterval(subscriptionStatusPollTimer);
         subscriptionStatusPollTimer = null;
@@ -1327,21 +1353,11 @@ async function unlockTerminalSuccess() {
             SESSION_VAULT.voiceLang = d.preferences.voiceLang || "en-US";
             SESSION_VAULT.newsLang = d.preferences.newsLang || "en-US";
             SESSION_VAULT.aiChatLang = d.preferences.aiChatLang || "en-US";
-            SESSION_VAULT.customRelayUrl = d.preferences.customRelayUrl || "";
 
             const langDropdown = document.getElementById("settingVoiceLanguage");
             if (langDropdown) langDropdown.value = SESSION_VAULT.voiceLang;
             const chatDropdown = document.getElementById("aiChatLangSelect");
             if (chatDropdown) chatDropdown.value = SESSION_VAULT.aiChatLang;
-            const relayInput = document.getElementById("settingCustomRelayUrl");
-            const relayBadge = document.getElementById("relayUrlStatusBadge");
-            if (relayInput) relayInput.value = SESSION_VAULT.customRelayUrl;
-            if (relayBadge) {
-                relayBadge.textContent = SESSION_VAULT.customRelayUrl ? "ACTIVE" : "UNSET";
-                relayBadge.className = SESSION_VAULT.customRelayUrl
-                    ? "text-[8px] bg-[#00d09c]/20 text-[#059669] px-1.5 py-0.2 rounded font-mono font-bold border border-[#00d09c]/30"
-                    : "text-[8px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded font-mono font-bold border border-slate-200";
-            }
         }
         if (Array.isArray(d.tradeHistory)) {
             SESSION_VAULT.tradeHistory = d.tradeHistory;
@@ -1375,7 +1391,7 @@ async function unlockTerminalSuccess() {
     checkHardKillSwitchLock();
 
     const welcomeVoice = (SESSION_VAULT.voiceLang === "bn-IN")
-        ? "প্রিয় ট্রেডার, আপনার প্রো ট্রেডিং অ্যাপ আনলক হয়েছে। আজ শুধু নিয়ম মেনে ডিসিপ্লিন্ড ট্রেড হবে।"
+        ? "Welcome trader, your Pro Trading app is unlocked. Today only disciplined, rule-based trades."
         : "Pro trading app unlocked. Ready for disciplined execution.";
     explainTextFriendly(welcomeVoice, "App Live");
     startPeriodicVoiceScanner();
@@ -1934,7 +1950,7 @@ function showPendingAdminHoldScreen(profileObj) {
     document.getElementById("pendingUserName").textContent = profileObj.fullName || "-";
     document.getElementById("pendingUserUid").textContent = profileObj.traderUid || "-";
     document.getElementById("pendingUserPan").textContent = profileObj.panMasked || profileObj.pan || "-";
-}
+};
 
 async function handleSubmitForVerification() {
     const errBox = document.getElementById("kycErrorBanner");
@@ -1986,6 +2002,131 @@ async function handleSubmitForVerification() {
         document.getElementById("setupPinModal")?.classList.remove("hidden");
     } finally {
         if (btn) { btn.disabled = false; btn.innerHTML = `<i class="fa-solid fa-file-shield"></i> <span>Submit Verification to Admin Review</span>`; }
+    }
+}
+
+// =====================================================================
+// Account Deletion (Module 9 - GDPR Compliant)
+// =====================================================================
+
+let accountDeletionCountdownTimer = null;
+let accountDeletionCountdownSeconds = 15;
+
+async function requestAccountDeletion() {
+    if (!auth.currentUser) return;
+    
+    const res = await secureApiCall("account-deletion/request", {
+        method: "POST",
+        jsonBody: {}
+    });
+    
+    if (!res.ok || !res.data?.success) {
+        alert(res.data?.message || "Failed to request account deletion");
+        return;
+    }
+    
+    // Show 15-second countdown modal
+    showAccountDeletionCountdownModal(res.data.cancellation_window_ends_at);
+}
+
+function showAccountDeletionCountdownModal(cancellationWindowEndsAt) {
+    const modal = document.getElementById("accountDeletionCountdownModal");
+    const countdownEl = document.getElementById("accountDeletionCountdown");
+    
+    if (!modal || !countdownEl) return;
+    
+    modal.classList.remove("hidden");
+    
+    const endTime = new Date(cancellationWindowEndsAt).getTime();
+    accountDeletionCountdownSeconds = 15;
+    
+    const updateCountdown = () => {
+        const now = Date.now();
+        const remaining = Math.max(0, (endTime - now) / 1000);
+        
+        if (countdownEl) {
+            countdownEl.textContent = remaining.toFixed(2);
+        }
+        
+        if (remaining <= 0) {
+            clearInterval(accountDeletionCountdownTimer);
+            accountDeletionCountdownTimer = null;
+            dismissAccountDeletionCountdown();
+            showAccountDeletionConfirmModal();
+        }
+    };
+    
+    updateCountdown();
+    accountDeletionCountdownTimer = setInterval(updateCountdown, 50);
+}
+
+function dismissAccountDeletionCountdown() {
+    const modal = document.getElementById("accountDeletionCountdownModal");
+    if (modal) modal.classList.add("hidden");
+    if (accountDeletionCountdownTimer) {
+        clearInterval(accountDeletionCountdownTimer);
+        accountDeletionCountdownTimer = null;
+    }
+}
+
+async function cancelAccountDeletion() {
+    dismissAccountDeletionCountdown();
+    
+    const res = await secureApiCall("account-deletion/cancel", {
+        method: "POST",
+        jsonBody: {}
+    });
+    
+    if (res.ok && res.data?.success) {
+        alert("Account deletion cancelled successfully");
+    } else {
+        alert(res.data?.message || "Failed to cancel deletion request");
+    }
+}
+
+function showAccountDeletionConfirmModal() {
+    const modal = document.getElementById("accountDeletionConfirmModal");
+    if (modal) modal.classList.remove("hidden");
+}
+
+function dismissAccountDeletionConfirm() {
+    const modal = document.getElementById("accountDeletionConfirmModal");
+    if (modal) modal.classList.add("hidden");
+}
+
+async function confirmAccountDeletion() {
+    const modal = document.getElementById("accountDeletionConfirmModal");
+    if (modal) modal.classList.add("hidden");
+    
+    alert("Account deletion confirmed. Your request is now pending admin approval.");
+    
+    // Show pending lock screen
+    showAccountDeletionPendingModal();
+}
+
+function showAccountDeletionPendingModal() {
+    const modal = document.getElementById("accountDeletionPendingModal");
+    if (modal) modal.classList.remove("hidden");
+}
+
+function dismissAccountDeletionConfirm() {
+    const modal = document.getElementById("accountDeletionConfirmModal");
+    if (modal) modal.classList.add("hidden");
+}
+
+async function checkAccountDeletionStatus() {
+    if (!auth.currentUser) return;
+    
+    const res = await secureApiCall("account-deletion/status", {
+        method: "GET"
+    });
+    
+    if (!res.ok || !res.data) return;
+    
+    const status = res.data;
+    
+    if (status.deletion_status === "DELETION_PENDING") {
+        showAccountDeletionPendingModal();
     }
 }
 
@@ -2650,10 +2791,50 @@ function connectBinanceWs() {
     }
 }
 
+function connectBackendPriceWs() {
+    if (backendPriceWs && (backendPriceWs.readyState === WebSocket.OPEN || backendPriceWs.readyState === WebSocket.CONNECTING)) return;
+    const symbols = [
+        "BTCUSDT", "ETHUSDT", "PAXGUSDT",
+        "NIFTY", "BANKNIFTY", "SENSEX", "BANKEX",
+        "RELIANCE", "HDFCBANK", "TATAMOTORS", "TCS", "INFY"
+    ].join(",");
+    const wsUrl = `${FASTAPI_BASE_URL.replace("http", "ws")}/feeds/ws/prices?symbols=${encodeURIComponent(symbols)}`;
+    try {
+        backendPriceWs = new WebSocket(wsUrl);
+        backendPriceWs.onopen = () => {
+            backendPriceWsReconnectAttempts = 0;
+            console.log("[Backend Price WS] Connected");
+        };
+        backendPriceWs.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                if (!msg || !msg.type) return;
+                if (msg.type === "snapshot" && msg.data) {
+                    Object.entries(msg.data).forEach(([sym, data]) => {
+                        if (data) ingestNormalizedTick({ ...data, symbol: sym });
+                    });
+                } else if (msg.type === "tick" && msg.data) {
+                    ingestNormalizedTick(msg.data);
+                }
+            } catch (err) {
+                console.warn("[Backend Price WS Parse]:", err.message);
+            }
+        };
+        backendPriceWs.onclose = () => {
+            backendPriceWsReconnectAttempts++;
+            const delay = Math.min(30000, 1500 * Math.pow(2, backendPriceWsReconnectAttempts)) + Math.floor(Math.random() * 1000);
+            backendPriceWsReconnectTimer = setTimeout(connectBackendPriceWs, delay);
+            console.log(`[Backend Price WS] Reconnecting in ${delay}ms (attempt ${backendPriceWsReconnectAttempts})`);
+        };
+        backendPriceWs.onerror = () => backendPriceWs?.close();
+    } catch (e) {
+        console.warn("[Backend Price WS Init]:", e.message);
+    }
+}
+
 async function syncCoinDcxOrBinanceFeed() {
     if (SESSION_VAULT.coindcxLinked && auth.currentUser && isTerminalUnlocked) {
-        // Keep the Binance WS alive as a permanent crypto reference feed.
-        connectBinanceWs();
+        // CoinDCX linked - fetch depth data for L2
         const cRes = await secureApiCall("coindcx_market_feed", { method: "GET" });
         if (cRes.ok && cRes.data?.success && cRes.data.coindcxConnected && cRes.data.quotes) {
             window.LAST_COINDCX_ALL_USDT = Array.isArray(cRes.data.allUsdt) ? cRes.data.allUsdt : [];
@@ -2708,9 +2889,8 @@ async function syncCoinDcxOrBinanceFeed() {
             return;
         }
     }
-
-    // Pull live crypto feed from Binance regardless of CoinDCX connection.
-    connectBinanceWs();
+    // CoinDCX not linked - prices come from backend Price WS (Binance Spot WS)
+    // Only Binance depth WS is maintained separately
     updateAutoTradeRouteBadge();
 }
 
@@ -3645,7 +3825,7 @@ function enqueueOpportunities(list) {
     if (SESSION_VAULT.currentOppData?.orderKey) existingKeys.add(SESSION_VAULT.currentOppData.orderKey);
     const mapped = list
         .filter(x => x?.id && x?.expiresAt && x?.bengaliReason
-            && x.executionEligible === true && Number(x.fusionScore) >= 70
+            && x.executionEligible === true && x.isNetViable !== false && Number(x.fusionScore) >= 70
             && !existingKeys.has(x.orderKey))
         .map(x => ({
             ...x,
@@ -3710,60 +3890,56 @@ function triggerOpportunityAlert(data) {
     playOpportunitySonarBeep(isBuy ? "BUY" : "SELL");
 
     const modal = document.getElementById("opportunityPopupModal");
-    document.getElementById("oppPopupQueueBadge").textContent = `QUEUE: 1/${OPPORTUNITY_QUEUE.length + 1}`;
-    document.getElementById("oppPopupProbBadge").textContent = data.isDemoTest
-        ? "DEMO SIMULATION"
-        : `FUSION ${data.calibratedProbPct}%`;
-    document.getElementById("oppPopupConfluenceBadge").textContent = `${data.freshness || "LIVE"} • ${data.exchange || ""}`;
-    document.getElementById("oppPopupTitle").textContent = `${data.symbol}: ${data.type}`;
-    document.getElementById("oppPopupSubtitle").textContent = data.bengaliReason || data.reason || "সার্ভার যাচাইকৃত সুযোগ";
-    const assetClass = data.category === "crypto"
-        ? "CRYPTO FUTURES (PAPER)"
-        : data.optionType
-            ? `${data.exchange} OPTION`
-            : `${data.exchange} EQUITY`;
-    document.getElementById("oppPopupAssetClass").textContent = assetClass;
-    document.getElementById("oppPopupDirection").textContent = data.optionType
-        ? `${data.direction} • ${data.optionType}`
-        : data.side;
-    document.getElementById("oppPopupStrike").textContent = data.strike
-        ? `${data.strike} • ${data.expiry || ""}`
-        : "--";
-    document.getElementById("oppPopupProbNote").textContent = data.isDemoTest
-        ? "DEMO TEST ONLY — Execution Blocked"
-        : `${Number(data.fusionScore || 0) >= 70 ? "Server-validated manual opportunity" : "তথ্যভিত্তিক সতর্কতা; ট্রেড স্কোর ৭০-এর নিচে"} • Auto-trade requires 90+ • ${data.mode || "PAPER"} • Expires in 15 seconds${data.autoTradeState ? ` • Auto: ${data.autoTradeState}` : ""}`;
-
+    const score = Number(data.fusionScore || data.calibratedProbPct || 0);
+    document.getElementById("oppPopupScoreBadge").textContent = `Score: ${score}%`;
+    document.getElementById("oppPopupTitle").textContent = data.symbol;
+    document.getElementById("oppPopupDirBadge").textContent = data.side;
+    document.getElementById("oppPopupDirBadge").className = `px-1.5 py-0.5 rounded font-black ${data.side === "BUY" ? "bg-[#00d09c]/20 text-[#059669]" : "bg-[#eb5b3c]/20 text-[#eb5b3c]"}`;
     document.getElementById("oppPopupEntry").textContent = data.entry;
     document.getElementById("oppPopupSL").textContent = data.sl;
     document.getElementById("oppPopupTarget").textContent = data.target;
 
-    const canonical = resolveCanonicalInstrument(data.orderKey);
-    const qtyEl = document.getElementById("oppPopupQtyInput");
-    if (qtyEl) {
-        qtyEl.value = String(data.quantity || canonical?.lotSize || 1);
-        qtyEl.step = String(canonical?.lotSize || 1);
-        qtyEl.min = String(canonical?.lotSize || 0.0001);
-        qtyEl.disabled = !data.isDemoTest;
-    }
-    updateOppPopupRiskPreview();
+    const rr = data.target && data.sl && data.entry ? ((data.target - data.entry) / (data.entry - data.sl)).toFixed(2) : "--";
+    document.getElementById("oppPopupRrBadge").textContent = `R:R ${rr}`;
+    document.getElementById("oppPopupRiskBadge").textContent = `₹${(data.quantity * (data.entry - data.sl)).toFixed(0)}`;
 
-    const evEl = document.getElementById("oppPopupEventNote");
-    if (evEl) evEl.textContent = data.serverGatesPassed ? "Server engines/news/risk gates: PASS" : "Server gates pending";
+    const netProfit = Number.isFinite(data.netProfitAfterCosts) ? data.netProfitAfterCosts : null;
+    const netBadge = document.getElementById("oppPopupNetProfitBadge");
+    if (netBadge) {
+        if (netProfit !== null) {
+            netBadge.textContent = `Net: ₹${netProfit.toLocaleString("en-IN", {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            netBadge.className = netProfit > 0 ? "text-[#059669] font-black" : "text-[#eb5b3c] font-black";
+        } else {
+            netBadge.textContent = "Net: ₹--";
+            netBadge.className = "text-[#059669] font-black";
+        }
+    }
+
+    const riskVetoBadge = document.getElementById("oppPopupRiskVetoBadge");
+    if (riskVetoBadge) {
+        const isVetoed = data.isNetViable === false || data.costVetoReason || data.executionEligible === false;
+        if (isVetoed) {
+            riskVetoBadge.textContent = data.costVetoReason ? "AVOID RISK" : "RISK VETO";
+            riskVetoBadge.classList.remove("hidden");
+        } else {
+            riskVetoBadge.classList.add("hidden");
+        }
+    }
 
     const execBtn = document.getElementById("btnExecuteOpp");
     if (execBtn) {
         if (data.isDemoTest) {
             execBtn.disabled = true;
-            execBtn.className = "w-full bg-slate-200 text-slate-700 font-bold py-3 rounded-xl text-xs";
-            execBtn.innerHTML = `<i class="fa-solid fa-ban mr-1"></i> <span>Demo Alert (Non-Tradable)</span>`;
-        } else if (data.executionEligible !== true || Number(data.fusionScore || 0) < 70) {
+            execBtn.className = "flex-1 bg-slate-200 text-slate-700 font-bold py-2 rounded-xl text-[9px] cursor-not-allowed";
+            execBtn.innerHTML = `<i class="fa-solid fa-ban mr-1"></i> <span>DEMO</span>`;
+        } else if (data.executionEligible !== true || score < 70) {
             execBtn.disabled = true;
-            execBtn.className = "w-full bg-slate-200 text-slate-500 font-bold py-3 rounded-xl text-xs cursor-not-allowed";
-            execBtn.innerHTML = `<i class="fa-solid fa-circle-info mr-1"></i> <span>তথ্যভিত্তিক • ম্যানুয়াল ট্রেডের জন্য ৭০+ প্রয়োজন</span>`;
+            execBtn.className = "flex-1 bg-slate-200 text-slate-500 font-bold py-2 rounded-xl text-[9px] cursor-not-allowed";
+            execBtn.innerHTML = `<i class="fa-solid fa-circle-info mr-1"></i> <span>Score < 70</span>`;
         } else {
             execBtn.disabled = false;
-            execBtn.className = isBuy ? "w-full groww-btn-green py-3 rounded-xl text-xs font-bold" : "w-full groww-btn-red py-3 rounded-xl text-xs font-black";
-            execBtn.innerHTML = `<i class="fa-solid fa-bolt mr-1"></i> <span>EXECUTE 1-CLICK (PAPER)</span>`;
+            execBtn.className = data.side === "BUY" ? "flex-1 groww-btn-green py-2 rounded-xl text-[9px] font-black" : "flex-1 groww-btn-red py-2 rounded-xl text-[9px] font-black";
+            execBtn.innerHTML = `<i class="fa-solid fa-bolt mr-1"></i> <span>EXECUTE</span>`;
         }
     }
 
@@ -3831,12 +4007,10 @@ async function executeOpportunityTradeNow() {
     const opp = SESSION_VAULT.currentOppData;
     if (!opp) return;
     if (opp.isDemoTest) {
-        alert("This is a DEMO SIMULATION alert. Live/paper order routing is disabled for demo tests.");
         dismissOpportunityPopup();
         return;
     }
     if (opp.executionEligible !== true || Number(opp.fusionScore || 0) < 70) {
-        alert("এই সতর্কতাটি তথ্যভিত্তিক। অর্ডারের জন্য সার্ভার-যাচাইকৃত ৮০+ কনফ্লুয়েন্স প্রয়োজন।");
         return;
     }
     if (!isOpportunityValid(opp)) {
@@ -3854,11 +4028,23 @@ async function executeOpportunityTradeNow() {
     if (!response.ok || !response.data?.success) {
         oppPopupPinnedAfterOrder = false;
         alert(response.data?.detail?.code === "OPPORTUNITY_EXPIRED_OR_CLAIMED"
-            ? "এই সুযোগটির ১৫ সেকেন্ডের মেয়াদ শেষ হয়েছে।"
+            ? "This opportunity's 15-second window has expired."
             : response.data?.detail || "Paper trade could not be submitted.");
         advanceOpportunityQueue();
         return;
     }
+    // Save to execution log
+    await saveExecutionLogToBackend({
+        symbol: opp.symbol,
+        side: opp.side,
+        quantity: opp.quantity,
+        entry_price: opp.entry,
+        stop_loss: opp.sl,
+        take_profit: opp.target,
+        score: opp.fusionScore || opp.calibratedProbPct || 0,
+        status: "CLAIMED",
+        is_auto_trade: false
+    });
     alert(`Paper order accepted: ${opp.symbol} • Qty ${opp.quantity}`);
     dismissOpportunityPopup();
 }
@@ -4630,6 +4816,53 @@ function clearSearchInput() {
     renderDynamicScanner();
 }
 
+function getShikariBadge(engines) {
+    if (!engines || !Array.isArray(engines)) return null;
+    const shikariEngines = engines.filter(e => e.engineId && e.engineId.startsWith("ENG2"));
+    if (!shikariEngines.length) return null;
+    
+    const badges = [];
+    
+    // ENG21: Sweep Reclaim
+    const sweep = shikariEngines.find(e => e.engineId === "ENG21_SHIKARI_SWEEP_RECLAIM");
+    if (sweep && sweep.status === "PASS") {
+        const dir = sweep.direction === "BUY" ? "🟢" : "🔴";
+        badges.push({ html: `${dir} SWEEP RECLAIM`, class: "bg-[#00d09c]/20 text-[#059669] border-[#00d09c]/30" });
+    }
+    
+    // ENG22: Whale Absorption
+    const whale = shikariEngines.find(e => e.engineId === "ENG22_SHIKARI_WHALE_ABSORPTION");
+    if (whale && whale.status === "PASS") {
+        const dir = whale.direction === "BUY" ? "🟢" : "🔴";
+        badges.push({ html: `${dir} WHALE ABSORPTION`, class: "bg-blue-500/20 text-blue-600 border-blue-500/30" });
+    }
+    
+    // ENG23: Dump Shield (WARNING)
+    const dump = shikariEngines.find(e => e.engineId === "ENG23_SHIKARI_DUMP_SHIELD");
+    if (dump && dump.status === "FAIL") {
+        badges.push({ html: "🔴 DUMP SHIELD: VETO", class: "bg-[#eb5b3c]/20 text-[#eb5b3c] border-[#eb5b3c]/30 animate-pulse" });
+    } else if (dump && dump.status === "WARN") {
+        badges.push({ html: "🟡 DUMP SHIELD: CAUTION", class: "bg-amber-500/20 text-amber-700 border-amber-500/30" });
+    }
+    
+    // ENG24: FII/DII OI Alignment
+    const fii = shikariEngines.find(e => e.engineId === "ENG24_SHIKARI_FII_DII_OI");
+    if (fii && fii.status === "PASS" && fii.direction !== "NEUTRAL") {
+        const dir = fii.direction === "BUY" ? "🟢" : "🔴";
+        badges.push({ html: `${dir} FII/DII ALIGNED`, class: "bg-purple-500/20 text-purple-700 border-purple-500/30" });
+    } else if (fii && fii.status === "FAIL") {
+        badges.push({ html: "🔴 FII/DII CONFLICT", class: "bg-[#eb5b3c]/20 text-[#eb5b3c] border-[#eb5b3c]/30" });
+    }
+    
+    // ENG25: Hunter Unwind (CRITICAL)
+    const unwind = shikariEngines.find(e => e.engineId === "ENG25_SHIKARI_HUNTER_UNWIND");
+    if (unwind && unwind.status === "FAIL") {
+        badges.push({ html: "🚨 HUNTER UNWIND: EXIT!", class: "bg-[#eb5b3c] text-white animate-pulse font-black" });
+    }
+    
+    return badges.length ? badges : null;
+}
+
 function renderDynamicScanner(customList = null) {
     const container = document.getElementById("assetsFeedContainer");
     if (!container) return;
@@ -4751,6 +4984,11 @@ function renderDynamicScanner(customList = null) {
             </div>
 
             ${opp && opp.reasons && opp.reasons.length > 0 ? `<div class="text-[9px] font-mono text-slate-700 bg-slate-50 px-2.5 py-1.5 rounded-xl border border-slate-200 truncate">✨ ${sanitizeCleanText(opp.reasons.join(" • "))}</div>` : ""}
+
+            ${(opp && opp.engines && getShikariBadge(opp.engines)) ? `
+            <div class="flex flex-wrap gap-1.5">
+                ${getShikariBadge(opp.engines).map(b => `<span class="text-[7.5px] font-mono font-bold px-2 py-0.5 rounded-lg border ${b.class}">${b.html}</span>`).join("")}
+            </div>` : ""}
 
             <div class="grid grid-cols-3 gap-1.5 bg-slate-50 p-2 rounded-xl border border-slate-200 mono-font text-[9.5px] text-center">
                 <div><span class="text-slate-500 text-[8px] block">Ref Entry</span><b class="text-slate-900">${hasStrongOpp ? opp.entry : a.price}</b></div>
@@ -5037,6 +5275,12 @@ function renderOpenPositions() {
         symBold.textContent = p.tsym || p.token;
         top.append(dirBadge, symBold);
 
+        // SHIKARI Footprint Badge for live positions
+        const shikariLiveBadge = document.createElement("span");
+        shikariLiveBadge.id = `shikari-live-${p.id}`;
+        shikariLiveBadge.className = "flex flex-wrap gap-1 ml-2";
+        top.append(shikariLiveBadge);
+
         const sub = document.createElement("span");
         sub.className = "text-[8.5px] text-slate-500 block mt-0.5";
         const pnlVal = (p.liveMtm !== undefined ? p.liveMtm : (p.upnl || 0)) + (p.rpnl || 0);
@@ -5068,16 +5312,59 @@ function renderPaperAutomationPositions() {
     }
     positions.forEach(position => {
         const row = document.createElement("div");
-        row.className = "flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-[10px] mono-font";
-        const label = document.createElement("span");
-        label.className = "text-slate-700";
-        label.textContent = `${position.isAutoTrade ? "AUTO" : "PAPER"} ${position.side} ${position.symbol} • ${position.quantity} @ ${position.entry}`;
+        const isAuto = position.isAutoTrade === true;
+        row.className = `flex flex-col gap-1.5 p-2.5 rounded-xl ${isAuto ? "bg-green-50 border border-[#00d09c]" : "bg-slate-50 border border-slate-200"} text-[10px] mono-font`;
+        
+        // Header with type badge, symbol, and AI Swarm status
+        const header = document.createElement("div");
+        header.className = "flex items-center justify-between flex-wrap gap-1.5";
+        const badge = document.createElement("span");
+        badge.className = `px-1.5 py-0.5 rounded text-[8px] font-black ${isAuto ? "bg-[#00d09c]/15 text-[#059669]" : "bg-slate-200 text-slate-600"}`;
+        badge.textContent = isAuto ? "🤖 AUTO" : "📝 MANUAL";
+        const symbol = document.createElement("span");
+        symbol.className = "text-slate-700 font-bold";
+        symbol.textContent = `${position.side} ${position.symbol} @ ${position.entry}`;
+        
+        // AI Swarm Telemetry Badge
+        const swarmBadge = document.createElement("span");
+        swarmBadge.id = `swarm-badge-${position.id}`;
+        swarmBadge.className = "px-2 py-0.5 rounded text-[7px] font-black bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-sm flex items-center gap-1";
+        swarmBadge.innerHTML = `<span>🧠</span><span>100 AI Agents Supervising (360°)</span><span id="swarm-consensus-${position.id}">Consensus: --%</span>`;
+        
+        // SHIKARI Footprint Badges
+        const shikariBadgeContainer = document.createElement("div");
+        shikariBadgeContainer.id = `shikari-badge-${position.id}`;
+        shikariBadgeContainer.className = "flex flex-wrap gap-1";
+        
+        header.append(badge, symbol, swarmBadge, shikariBadgeContainer);
+        
+        // Details: Qty, SL, TP, Trailing, Favorable, P&L
+        const details = document.createElement("div");
+        details.className = "flex flex-wrap items-center gap-2 text-[8px] text-slate-500 font-mono";
+        const pnl = (position.currentPrice && position.entry) 
+            ? (position.side === "BUY" ? (position.currentPrice - position.entry) : (position.entry - position.currentPrice)) * position.quantity
+            : 0;
+        const pnlColor = pnl >= 0 ? "text-[#059669]" : "text-[#eb5b3c]";
+        const trailClass = "text-blue-600 font-bold";
+        const favClass = "text-purple-600 font-bold";
+        details.innerHTML = `
+            <span>Qty: ${position.quantity}</span>
+            <span>Entry: ${position.entry}</span>
+            <span class="text-[#eb5b3c]">SL: ${position.stopLoss}</span>
+            <span class="text-[#00d09c]">TP: ${position.takeProfit}</span>
+            ${position.trailingDistance ? `<span class="${trailClass}">Trail: ${position.trailingDistance}</span>` : ""}
+            ${position.favorablePrice ? `<span class="${favClass}">Fav: ${position.favorablePrice}</span>` : ""}
+            <span class="${pnlColor}">P&L: ${pnl.toFixed(2)}</span>
+        `;
+        
+        // Exit button
         const exit = document.createElement("button");
         exit.type = "button";
-        exit.className = "px-2.5 py-1.5 rounded-lg bg-[#eb5b3c] text-white font-black text-[9px]";
+        exit.className = "px-2.5 py-1.5 rounded-lg bg-[#eb5b3c] text-white font-black text-[9px] mt-1.5 w-full";
         exit.textContent = "FAST EXIT";
         exit.addEventListener("click", () => fastExitPaperPosition(position.id));
-        row.append(label, exit);
+        
+        row.append(header, details, exit);
         container.appendChild(row);
     });
 }
@@ -5090,7 +5377,45 @@ async function syncAutomationPaperPositions() {
         return;
     }
     SESSION_VAULT.paperAutomationPositions = res.data.positions;
+    // Fetch current prices for P&L
+    updatePaperPositionsPricesFromFeed();
     renderPaperAutomationPositions();
+}
+
+function updatePaperPositionsPricesFromFeed() {
+    const openPositions = SESSION_VAULT.paperAutomationPositions.filter(p => p.status === "OPEN");
+    if (!openPositions.length) return;
+    
+    // Use MASTER_ASSETS which has real-time prices from market feed
+    openPositions.forEach(pos => {
+        const asset = MASTER_ASSETS.find(a => 
+            (pos.exchange === "COINDCX" && a.symbol === pos.symbol) ||
+            (pos.exchange !== "COINDCX" && a.symbol === pos.symbol) ||
+            (pos.orderKey && a.orderKey === pos.orderKey)
+        );
+        if (asset && asset.priceNum > 0) {
+            pos.currentPrice = asset.priceNum;
+        }
+    });
+}
+
+async function startPaperPnLPolling() {
+    if (window.paperPnLPollingInterval) return;
+    window.paperPnLPollingInterval = setInterval(async () => {
+        if (!auth.currentUser || document.hidden) return;
+        const activeTab = document.getElementById("subTabContent_autotrade");
+        if (activeTab && !activeTab.classList.contains("hidden")) {
+            updatePaperPositionsPricesFromFeed();
+            renderPaperAutomationPositions();
+        }
+    }, 3000); // 3 second polling
+}
+
+function stopPaperPnLPolling() {
+    if (window.paperPnLPollingInterval) {
+        clearInterval(window.paperPnLPollingInterval);
+        window.paperPnLPollingInterval = null;
+    }
 }
 
 async function fastExitPaperPosition(positionId, skipConfirmation = false) {
@@ -5105,6 +5430,105 @@ async function fastExitPaperPosition(positionId, skipConfirmation = false) {
         return;
     }
     await Promise.allSettled([syncAutomationPaperPositions(), syncServerRiskState()]);
+}
+
+async function updateAISwarmTelemetry() {
+    if (!auth.currentUser) return;
+    try {
+        const res = await fastApiRequest("/ai_swarm/status");
+        if (!res.ok || !res.data?.swarms) return;
+        
+        res.data.swarms.forEach(swarm => {
+            const badge = document.getElementById(`swarm-badge-${swarm.order_id}`);
+            const consensusEl = document.getElementById(`swarm-consensus-${swarm.order_id}`);
+            if (!badge || !consensusEl) return;
+            
+            const consensusPct = Math.round(swarm.consensus_score * 100);
+            consensusEl.textContent = `Consensus: ${consensusPct}%`;
+            
+            if (swarm.is_terminated) {
+                badge.className = "px-2 py-0.5 rounded text-[7px] font-black bg-slate-500 text-white flex items-center gap-1";
+                badge.innerHTML = `<span>⏹️</span><span>Swarm Terminated</span><span>${swarm.last_verdict}</span>`;
+            } else if (consensusPct >= 100) {
+                badge.className = "px-2 py-0.5 rounded text-[7px] font-black bg-[#eb5b3c] text-white animate-pulse flex items-center gap-1";
+                badge.innerHTML = `<span>🚨</span><span>100% CONSENSUS - EXITING!</span><span>${swarm.last_verdict}</span>`;
+            } else if (consensusPct >= 80) {
+                badge.className = "px-2 py-0.5 rounded text-[7px] font-black bg-amber-500 text-white flex items-center gap-1";
+                badge.innerHTML = `<span>⚠️</span><span>High Consensus: ${consensusPct}%</span><span>${swarm.last_verdict}</span>`;
+            } else if (consensusPct >= 50) {
+                badge.className = "px-2 py-0.5 rounded text-[7px] font-black bg-blue-500 text-white flex items-center gap-1";
+                badge.innerHTML = `<span>🧠</span><span>Moderate Consensus: ${consensusPct}%</span><span>${swarm.last_verdict}</span>`;
+            } else {
+                badge.className = "px-2 py-0.5 rounded text-[7px] font-black bg-gradient-to-r from-purple-600 to-blue-600 text-white flex items-center gap-1";
+                badge.innerHTML = `<span>🧠</span><span>100 AI Agents Supervising (360°)</span><span>Consensus: ${consensusPct}%</span>`;
+            }
+        });
+    } catch (e) {
+        console.warn("[AI Swarm Telemetry]", e);
+    }
+}
+
+async function updateShikariTelemetry() {
+    if (!auth.currentUser) return;
+    try {
+        const res = await fastApiRequest("/engines/evaluate", {
+            method: "POST",
+            jsonBody: {
+                symbol: currentSelectedAsset?.symbol || "NSE:NIFTY",
+                order_key: currentSelectedAsset?.orderKey || "NIFTY",
+                category: currentSelectedAsset?.category || "indian",
+                ltp: currentSelectedAsset?.priceNum || 0,
+                data_source: "LIVE",
+                data_quality: "LIVE",
+            }
+        });
+        if (!res.ok || !res.data?.engines) return;
+        
+        const engines = res.data.engines;
+        const shikariBadges = getShikariBadge(engines);
+        if (!shikariBadges || !shikariBadges.length) return;
+        
+        const badgeHtml = shikariBadges.map(b => 
+            `<span class="text-[7px] font-mono font-bold px-2 py-0.5 rounded-lg border ${b.class}">${b.html}</span>`
+        ).join("");
+        
+        // Update all visible paper position Shikari badges
+        SESSION_VAULT.paperAutomationPositions
+            .filter(p => p.status === "OPEN")
+            .forEach(position => {
+                const container = document.getElementById(`shikari-badge-${position.id}`);
+                if (container) container.innerHTML = badgeHtml;
+            });
+        
+        // Update live position Shikari badges
+        Object.values(SESSION_VAULT.fastPositionsMap).forEach(p => {
+            if (p && Number(p.qty) !== 0) {
+                const container = document.getElementById(`shikari-live-${p.id}`);
+                if (container) container.innerHTML = badgeHtml;
+            }
+        });
+    } catch (e) {
+        console.warn("[SHIKARI Telemetry]", e);
+    }
+}
+
+async function startAISwarmTelemetryPolling() {
+    if (window.aiSwarmTelemetryInterval) return;
+    window.aiSwarmTelemetryInterval = setInterval(async () => {
+        if (!auth.currentUser || document.hidden) return;
+        const activeTab = document.getElementById("subTabContent_autotrade");
+        if (activeTab && !activeTab.classList.contains("hidden")) {
+            await updateAISwarmTelemetry();
+            await updateShikariTelemetry();
+        }
+    }, 1000); // 1 second polling for real-time swarm status
+}
+
+function stopAISwarmTelemetryPolling() {
+    if (window.aiSwarmTelemetryInterval) {
+        clearInterval(window.aiSwarmTelemetryInterval);
+        window.aiSwarmTelemetryInterval = null;
+    }
 }
 
 async function panicExitAllPositions() {
@@ -5601,70 +6025,6 @@ function recordAndSyncTradeLog(symbol, side, qty, broker, status = "ACCEPTED", o
 }
 
 
-    async function saveCustomRelayUrlToCloud() {
-    const url = document.getElementById("settingCustomRelayUrl")?.value.trim() || "";
-    const secret = document.getElementById("settingCustomRelaySecret")?.value.trim() || "";
-    if (!url || !url.startsWith("https://")) {
-        alert("Please enter a valid https:// trycloudflare.com URL!");
-        return;
-    }
-    if (secret && secret.length < 16) {
-        alert("Relay Secret must be at least 16 characters!");
-        return;
-    }
-    const res = await secureApiCall("save_relay_url", {
-        method: "POST",
-        jsonBody: { customRelayUrl: url, customRelaySecret: secret }
-    });
-    const secInp = document.getElementById("settingCustomRelaySecret");
-    if (res.ok && secInp) secInp.value = "";
-
-    if (res.ok && res.data?.success) {
-        SESSION_VAULT.customRelayUrl = url;
-        const badge = document.getElementById("relayUrlStatusBadge");
-        if (badge) {
-            badge.textContent = "ACTIVE";
-            badge.className = "text-[8px] bg-[#00d09c]/20 text-[#059669] px-1.5 py-0.2 rounded font-mono font-bold border border-[#00d09c]/30";
-        }
-        const relayDot = document.getElementById("relayLiveDot");
-        const relayText = document.getElementById("relayLiveText");
-        if (relayDot) relayDot.className = "status-dot-green-1s shrink-0";
-        if (relayText) {
-            relayText.textContent = "LIVE";
-            relayText.className = "text-[8px] text-[#00d09c] font-mono";
-        }
-        applySettingsCredentialLock();
-        alert("✅ Local PC Relay URL & Secret saved securely!");
-    } else {
-        alert(res.data?.error || "Failed to save relay URL.");
-    }
-}
-async function clearCustomRelayUrlFromCloud() {
-    const res = await secureApiCall("save_relay_url", {
-        method: "POST",
-        jsonBody: { customRelayUrl: "" }
-    });
-    if (res.ok && res.data?.success) {
-        SESSION_VAULT.customRelayUrl = "";
-        const inp = document.getElementById("settingCustomRelayUrl");
-        if (inp) inp.value = "";
-        const badge = document.getElementById("relayUrlStatusBadge");
-        if (badge) {
-            badge.textContent = "UNSET";
-            badge.className = "text-[8px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded font-mono font-bold border border-slate-200";
-        }
-        const relayDot = document.getElementById("relayLiveDot");
-        const relayText = document.getElementById("relayLiveText");
-        if (relayDot) relayDot.className = "status-dot-red-1s shrink-0";
-        if (relayText) {
-            relayText.textContent = "LIVE";
-            relayText.className = "text-[8px] text-[#eb5b3c] font-mono";
-        }
-        applySettingsCredentialLock();
-        alert("Relay URL cleared.");
-    }
-}
-
 function updateBrokerConnectionDots(shoonyaLive, shoonyaLinked, coindcxLive, coindcxLinked) {
     const sLiveDot = document.getElementById("shoonyaLiveDot");
     const sLiveText = document.getElementById("shoonyaLiveText");
@@ -5726,15 +6086,19 @@ function updateBrokerConnectionDots(shoonyaLive, shoonyaLinked, coindcxLive, coi
 }
 
 async function autoConnectShoonyaBroker() {
-    const uid = document.getElementById("settingShoonyaUid")?.value.trim().toUpperCase() || "";
-    const vendorCode = document.getElementById("settingShoonyaVendor")?.value.trim().toUpperCase() || "";
-    const password = document.getElementById("settingShoonyaPassword")?.value.trim() || "";
-    const factor2 = document.getElementById("settingShoonyaTotp")?.value.trim() || "";
-    const apiKey = document.getElementById("settingShoonyaApiKey")?.value.trim() || "";
+    const uidEl = document.getElementById("settingShoonyaUid");
+    const pwdEl = document.getElementById("settingShoonyaPassword");
+    const factor2El = document.getElementById("settingShoonyaTotp");
+    const vendorCodeEl = document.getElementById("settingShoonyaVendor");
+    const apiKeyEl = document.getElementById("settingShoonyaApiKey");
     const btn = document.getElementById("btnShoonyaAutoConnect");
-
-    if (!password || !factor2) {
-        alert("Please enter your Shoonya Password and 6-Digit TOTP / PAN!");
+    const uid = uidEl?.value.trim().toUpperCase() || "";
+    const password = pwdEl?.value || "";
+    const factor2 = factor2El?.value.trim() || "";
+    const vendorCode = vendorCodeEl?.value.trim().toUpperCase() || "";
+    const apiKey = apiKeyEl?.value.trim() || "";
+    if (!uid || !password || !factor2) {
+        alert("Please enter your Shoonya User ID, Password, and 6-Digit TOTP / PAN!");
         return;
     }
 
@@ -5742,8 +6106,7 @@ async function autoConnectShoonyaBroker() {
 
     try {
         const res = await secureApiCall("shoonya_auto_login", {
-            method: "POST",
-            jsonBody: { uid, vendorCode, password, factor2, apiKey }
+            method: "POST"
         });
 
         if (res.ok && res.data?.success) {
@@ -5761,10 +6124,10 @@ async function autoConnectShoonyaBroker() {
             ]);
             alert(`✅ Shoonya Connected Successfully! Live Feed Active for ${res.data.uname}`);
         } else {
-            alert(`❌ Shoonya Login Failed: ${res.data?.error || "Check your credentials, TOTP, API Key, or Static IP Relay"}`);
+            alert(`❌ Shoonya Login Failed: ${res.data?.error || "Shoonya vault not configured or credentials invalid"}`);
         }
-    } finally {
-        if (btn) { btn.disabled = false; btn.innerHTML = `<i class="fa-solid fa-bolt mr-1"></i> Auto-Generate Token &amp; Connect Shoonya`; }
+} finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = `<i class="fa-solid fa-bolt mr-1"></i> Auto-Generate Token & Connect Shoonya`; }
     }
 }
 
@@ -5806,7 +6169,6 @@ function updateVaultStatusBadges() {
 
     applySettingsCredentialLock("shoonya", SESSION_VAULT.shoonyaLinked);
     applySettingsCredentialLock("coindcx", SESSION_VAULT.coindcxLinked);
-    applySettingsCredentialLock("relay", !!SESSION_VAULT.customRelayUrl);
 
     handleOrderSymbolChange();
 }
@@ -5872,7 +6234,7 @@ async function saveShoonyaVaultToRamAndCloud() {
 
     const res = await secureApiCall("save_broker_vault", {
         method: "POST",
-        jsonBody: { broker: "SHOONYA", shoonyaUid, shoonyaToken }
+        jsonBody: { broker: "SHOONYA", payload: { shoonyaUid, shoonyaToken } }
     });
     if (res.ok && res.data?.success) {
         SESSION_VAULT.shoonyaLinked = true;
@@ -5899,7 +6261,7 @@ async function saveCoinDcxVaultToRamAndCloud() {
 
     const res = await secureApiCall("save_broker_vault", {
         method: "POST",
-        jsonBody: { broker: "COINDCX", coindcxKey, coindcxSecret }
+        jsonBody: { broker: "COINDCX", payload: { coindcxKey, coindcxSecret } }
     });
     if (res.ok && res.data?.success) {
         SESSION_VAULT.coindcxLinked = true;
@@ -5920,56 +6282,75 @@ async function saveCoinDcxVaultToRamAndCloud() {
 
 async function syncRealBrokerBalances() {
     if (!auth.currentUser) return;
-    const elShoonya = document.getElementById("hudShoonyaBalance");
-    const elInr = document.getElementById("hudCoinDcxInrVal");
-    const elUsdt = document.getElementById("hudCoinDcxUsdtVal");
-    const elDcxBadge = document.getElementById("coindcxWalletStatusBadge");
-
-    const res = await secureApiCall("broker_balances", { method: "GET" });
-    if (!res.ok || !res.data?.success) return;
-
-    const s = res.data.shoonya;
-    const c = res.data.coindcx;
-    const sLive = !!(s?.linked && s.status === "LIVE");
-    const cLive = !!(c?.linked && c.status === "LIVE");
-
-    SESSION_VAULT.shoonyaLinked = !!s?.linked;
-    SESSION_VAULT.coindcxLinked = !!c?.linked;
-    updateBrokerConnectionDots(sLive, SESSION_VAULT.shoonyaLinked, cLive, SESSION_VAULT.coindcxLinked);
-
-    if (sLive) {
-        SESSION_VAULT.shoonyaLiveBalance = `₹${Number(s.cash || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
-        if (activePositionBroker === "shoonya" && elShoonya) {
-            elShoonya.textContent = SESSION_VAULT.shoonyaLiveBalance;
+    
+    // Fetch Shoonya balance
+    let shoonyaBalance = { linked: false, status: "NOT_CONNECTED", cash: 0, margin: 0, available_margin: 0 };
+    try {
+        const sRes = await secureApiCall("shoonya_balance", { method: "GET" });
+        if (sRes.ok && sRes.data?.success && sRes.data?.balance) {
+            shoonyaBalance = sRes.data.balance;
         }
-    } else if (elShoonya && activePositionBroker === "shoonya") {
-        elShoonya.textContent = s?.linked ? "₹0.00" : "₹0.00";
+    } catch (e) {
+        console.warn("[Shoonya Balance]:", e.message);
+    }
+    
+    // Fetch CoinDCX balance (dual wallets)
+    let coindcxBalance = { linked: false, status: "NOT_CONNECTED", spot_wallet_usdt: 0, futures_wallet_usdt: 0, inr_deposit: 0 };
+    try {
+        const cRes = await secureApiCall("coindcx_balance", { method: "GET" });
+        if (cRes.ok && cRes.data?.success && cRes.data?.balance) {
+            coindcxBalance = cRes.data.balance;
+        }
+    } catch (e) {
+        console.warn("[CoinDCX Balance]:", e.message);
     }
 
-    if (cLive) {
-        const usdt = Number(c.usdtBalance || 0);
-        const inr = Number(c.inrBalance || 0);
-        SESSION_VAULT.coindcxUsdtNum = usdt;
-        SESSION_VAULT.coindcxLiveBalance = `${usdt.toFixed(2)} USDT`;
+    const sLive = !!(shoonyaBalance.linked && shoonyaBalance.status === "LIVE");
+    const cLive = !!(coindcxBalance.linked && coindcxBalance.status === "LIVE");
 
-        if (elInr) elInr.textContent = `₹${inr.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
-        if (elUsdt) elUsdt.textContent = `${usdt.toFixed(2)} USDT`;
-        if (elDcxBadge) {
-            elDcxBadge.textContent = "LIVE DEPOSIT";
+    SESSION_VAULT.shoonyaLinked = !!shoonyaBalance.linked;
+    SESSION_VAULT.coindcxLinked = !!coindcxBalance.linked;
+    updateBrokerConnectionDots(sLive, SESSION_VAULT.shoonyaLinked, cLive, SESSION_VAULT.coindcxLinked);
+
+    // Update Shoonya balance display
+    const shoonyaCash = Number(shoonyaBalance.cash || 0);
+    const shoonyaAvailable = Number(shoonyaBalance.available_margin || shoonyaBalance.margin || 0);
+    const shoonyaUsed = Number(shoonyaBalance.used_margin || 0);
+    
+    SESSION_VAULT.shoonyaLiveBalance = `₹${shoonyaCash.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+    
+    const availCashEl = document.getElementById("availCash");
+    const marginUsedEl = document.getElementById("marginUsed");
+    const portValEl = document.getElementById("portVal");
+    
+    if (availCashEl) availCashEl.textContent = `₹${shoonyaAvailable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+    if (marginUsedEl) marginUsedEl.textContent = `₹${shoonyaUsed.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+    if (portValEl) portValEl.textContent = `₹${(shoonyaCash + shoonyaAvailable).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+
+    // Update CoinDCX dual wallet display
+    const spotUsdt = Number(coindcxBalance.spot_wallet_usdt || 0);
+    const futuresUsdt = Number(coindcxBalance.futures_wallet_usdt || 0);
+    const inrDeposit = Number(coindcxBalance.inr_deposit || 0);
+    
+    SESSION_VAULT.coindcxUsdtNum = spotUsdt + futuresUsdt;
+    SESSION_VAULT.coindcxLiveBalance = `${(spotUsdt + futuresUsdt).toFixed(2)} USDT`;
+    
+    const elInr = document.getElementById("hudCoinDcxInrVal");
+    const elSpotUsdt = document.getElementById("hudCoinDcxSpotUsdtVal");
+    const elFuturesUsdt = document.getElementById("hudCoinDcxFuturesUsdtVal");
+    const elDcxBadge = document.getElementById("coindcxWalletStatusBadge");
+    
+    if (elInr) elInr.textContent = `₹${inrDeposit.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+    if (elSpotUsdt) elSpotUsdt.textContent = `${spotUsdt.toFixed(2)} USDT`;
+    if (elFuturesUsdt) elFuturesUsdt.textContent = `${futuresUsdt.toFixed(2)} USDT`;
+    
+    if (elDcxBadge) {
+        if (cLive) {
+            elDcxBadge.textContent = "LIVE • SPOT + FUTURES";
             elDcxBadge.className = "text-[8.5px] bg-[#00d09c]/15 text-[#059669] font-mono font-bold px-2 py-0.5 rounded border border-[#00d09c]/30";
-        }
-        if (activePositionBroker === "coindcx" && elShoonya) {
-            elShoonya.textContent = inr > 0 ? `₹${inr.toLocaleString("en-IN")} (${usdt.toFixed(2)} USDT)` : `${usdt.toFixed(2)} USDT`;
-        }
-    } else {
-        if (elInr) elInr.textContent = "₹0.00";
-        if (elUsdt) elUsdt.textContent = "0.00 USDT";
-        if (elDcxBadge) {
-            elDcxBadge.textContent = c?.linked ? "LIVE DEPOSIT" : "NOT_CONNECTED";
+        } else {
+            elDcxBadge.textContent = coindcxBalance.linked ? "CONNECTED" : "NOT_CONNECTED";
             elDcxBadge.className = "text-[8.5px] bg-[#eb5b3c]/15 text-[#eb5b3c] font-mono font-bold px-2 py-0.5 rounded border border-[#eb5b3c]/30";
-        }
-        if (elShoonya && activePositionBroker === "coindcx") {
-            elShoonya.textContent = c?.linked ? "0.00 USDT" : "0.00 USDT";
         }
     }
 }
@@ -6164,9 +6545,7 @@ async function sendAiMessage() {
     if (res.ok && res.data?.success && res.data.reply) {
         addChatMessage("ai", res.data.reply);
     } else {
-        const asset = currentSelectedAsset || MASTER_ASSETS[0];
-        const qual = asset.dataEnvelope?.quality || "OFFLINE";
-        addChatMessage("ai", `🤖 AI Guardian: Gemini analysis temporarily unavailable (quality: ${qual}). Your query "${q.slice(0, 30)}${q.length > 30 ? "..." : ""}" has been noted. The system will process it as soon as the service is restored.`);
+        addChatMessage("ai", res.data?.reply || "AI Guardian temporarily unavailable. Please retry.");
     }
 }
 
@@ -6345,6 +6724,18 @@ function isNseHoliday(date = new Date()) {
     return NSE_TRADING_HOLIDAYS.includes(istDate);
 }
 
+async function getIndiaMarketStatus() {
+    try {
+        const res = await fastApiRequest("/market/status");
+        if (res.ok && res.data) {
+            return res.data;
+        }
+    } catch (e) {
+        console.warn("Failed to fetch market status:", e);
+    }
+    return null;
+}
+
 function getExchangeSessionStatus(category, now = new Date()) {
     if (category === "crypto" || category === "commodity") {
         return { isOpen: true, state: "OPEN_24X7", exchange: "CRYPTO", reason: "24/7 Active Market" };
@@ -6504,22 +6895,31 @@ async function setNewsDigestLanguage(langCode) {
 
     const tl = shortMap[langCode] || "en";
     if (tl !== "en" && allFetchedNewsItems.length > 0) {
-        const res = await secureApiCall("translate_text", {
+        // Use new backend /news/translate endpoint with Gemini Flash
+        const itemsToTranslate = allFetchedNewsItems.slice(0, 20).map(item => ({
+            title: item.title,
+            description: item.description,
+            summary: item.summary
+        }));
+        const res = await fastApiRequest("/news/translate", {
             method: "POST",
-            jsonBody: { texts: allFetchedNewsItems.slice(0, 15).map(i => i.title), tl }
+            body: { items: itemsToTranslate, target_langs: [tl], fields: ["title", "description", "summary"] }
         });
-        if (res.ok && Array.isArray(res.data?.translations)) {
-            res.data.translations.forEach((tr, idx) => {
-                if (allFetchedNewsItems[idx]) allFetchedNewsItems[idx].translatedTitle = tr;
+        if (res.ok && Array.isArray(res.data?.items)) {
+            res.data.items.forEach((tr, idx) => {
+                if (allFetchedNewsItems[idx]) {
+                    if (tr[`title_${tl}`]) allFetchedNewsItems[idx].translatedTitle = tr[`title_${tl}`];
+                    if (tr[`description_${tl}`]) allFetchedNewsItems[idx].translatedDescription = tr[`description_${tl}`];
+                    if (tr[`summary_${tl}`]) allFetchedNewsItems[idx].translatedSummary = tr[`summary_${tl}`];
+                }
             });
-            if (res.data.serverTranslated === false) {
-                await Promise.all(allFetchedNewsItems.slice(0, 15).map(async (item, idx) => {
-                    item.translatedTitle = await translateClientSideFallback(item.title, tl);
-                }));
-            }
         }
     } else {
-        allFetchedNewsItems.forEach(i => { delete i.translatedTitle; });
+        allFetchedNewsItems.forEach(i => { 
+            delete i.translatedTitle; 
+            delete i.translatedDescription; 
+            delete i.translatedSummary; 
+        });
     }
     renderFilteredNews();
 }
@@ -6562,6 +6962,14 @@ function renderFilteredNews() {
         if (activeNewsTab === "geopolitical") return isGeopoliticalOrMacro(n.title);
         return isNewsRelatedToAsset(n.title, asset);
     });
+    
+    // Sort: breaking news first, then by date
+    filtered.sort((a, b) => {
+        if (a.breaking && !b.breaking) return -1;
+        if (!a.breaking && b.breaking) return 1;
+        return (Date.parse(b.pubDate || 0)) - (Date.parse(a.pubDate || 0));
+    });
+
     if (activeNewsTab !== "geopolitical" && filtered.length === 0) {
         badgeEl.textContent = "No stock-specific news available";
         listEl.innerHTML = `<div class="groww-card p-4 text-center text-slate-500 font-mono text-[10px]">No verified recent news matches ${sanitizeCleanText(asset.name || asset.orderKey)}.</div>`;
@@ -6574,10 +6982,15 @@ function renderFilteredNews() {
         return;
     }
 
+    // Get current language for translations
+    const shortMap = { "en-US": "en", "bn-IN": "bn", "hi-IN": "hi", "gu-IN": "gu", "mr-IN": "mr", "ta-IN": "ta" };
+    const tl = shortMap[SESSION_VAULT.newsLang] || "en";
+
     listEl.innerHTML = "";
     filtered.forEach((n) => {
         const card = document.createElement("div");
-        card.className = "groww-card p-3 space-y-1.5 bg-white cursor-pointer hover:border-[#00d09c]";
+        const isBreaking = n.breaking === true;
+        card.className = `groww-card p-3 space-y-1.5 bg-white cursor-pointer hover:border-[#00d09c] ${isBreaking ? "border-l-4 border-[#eb5b3c] bg-red-50/30" : ""}`;
         card.addEventListener("click", () => openNewsReaderModal(n));
 
         const top = document.createElement("div");
@@ -6589,6 +7002,17 @@ function renderFilteredNews() {
             ? "px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-700 font-black"
             : (isRumor ? "px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 font-bold" : "px-1.5 py-0.5 rounded bg-[#00d09c]/10 text-[#059669] font-bold");
         src.textContent = `${n.verifiedSource || "WIRE"} • ${n.trustTier || "MEDIA"} (${n.eventCategory || "MARKET"})`;
+        
+        // Breaking badge
+        if (isBreaking) {
+            const breakingBadge = document.createElement("span");
+            breakingBadge.className = "px-1.5 py-0.5 rounded bg-[#eb5b3c]/20 text-[#eb5b3c] font-black text-[8px] animate-pulse";
+            breakingBadge.textContent = "🔴 BREAKING";
+            top.append(src, breakingBadge);
+        } else {
+            top.append(src);
+        }
+        
         const tm = document.createElement("span");
         const parsedDate = n.pubDate ? new Date(n.pubDate) : null;
         tm.textContent = parsedDate && Number.isFinite(parsedDate.getTime())
@@ -6601,13 +7025,18 @@ function renderFilteredNews() {
                 timeZone: "Asia/Kolkata"
             })
             : "";
-        top.append(src, tm);
+        top.append(tm);
 
         const titleP = document.createElement("p");
         titleP.className = "text-[11px] font-bold text-slate-900 leading-snug";
-        const summary = n.summary || n.title;
-        const impactTag = n.eventCategory && n.eventCategory !== "MARKET" ? `<span class="inline-block text-[8px] rounded bg-slate-100/20 text-slate-400 px-1 py-0.5 margin-x-1">📊 ${n.eventCategory}</span>` : "";
-        titleP.innerHTML = `${impactTag}${summary}`;
+        
+        // Use pre-translated content if available
+        const useTranslated = tl !== "en";
+        const displayTitle = useTranslated && n[`title_${tl}`] ? n[`title_${tl}`] : n.title;
+        const displaySummary = useTranslated && n[`summary_${tl}`] ? n[`summary_${tl}`] : (n.summary || n.title);
+        
+        const impactTag = n.eventCategory && n.eventCategory !== "MARKET" ? `<span class="inline-block text-[8px] rounded bg-slate-100/20 text-slate-400 px-1 py-0.5 mx-1">📊 ${n.eventCategory}</span>` : "";
+        titleP.innerHTML = `${impactTag}${displayTitle}. ${displaySummary}`;
 
         const hint = document.createElement("span");
         hint.className = "inline-block text-[9px] text-[#059669] font-mono font-bold";
@@ -6629,32 +7058,38 @@ async function openNewsReaderModal(newsItem) {
     const tl = shortMap[SESSION_VAULT.newsLang] || "en";
 
     if (srcEl) srcEl.textContent = newsItem.verifiedSource || "MARKET WIRE";
-    if (titleEl) titleEl.textContent = newsItem.translatedTitle || newsItem.title;
-    bodyEl.innerHTML = `<div class="py-6 text-center text-slate-500 font-mono text-xs"><i class="fa-solid fa-spinner animate-spin text-[#00d09c] mr-2"></i> Loading & Translating Full Story...</div>`;
+    
+    // Use pre-translated content from feed
+    const useTranslated = tl !== "en";
+    const displayTitle = useTranslated && newsItem[`title_${tl}`] ? newsItem[`title_${tl}`] : newsItem.title;
+    const displayBody = useTranslated && newsItem[`description_${tl}`] ? newsItem[`description_${tl}`] : newsItem.description;
+    const displaySummary = useTranslated && newsItem[`summary_${tl}`] ? newsItem[`summary_${tl}`] : newsItem.summary;
+    
+    if (titleEl) titleEl.textContent = displayTitle;
+    bodyEl.innerHTML = `<div class="py-6 text-center text-slate-500 font-mono text-xs"><i class="fa-solid fa-spinner animate-spin text-[#00d09c] mr-2"></i> Loading Full Story...</div>`;
     modal.classList.remove("hidden");
 
-    const res = await secureApiCall("news_article", {
-        method: "GET",
-        query: `url=${encodeURIComponent(newsItem.link || "")}&tl=${encodeURIComponent(tl)}&title=${encodeURIComponent(newsItem.title || "")}`
-    });
-
-    if (res.ok && res.data) {
-        const finalTitle = res.data.title || newsItem.translatedTitle || newsItem.title;
-        const paras = Array.isArray(res.data.paragraphs) && res.data.paragraphs.length ? res.data.paragraphs : [finalTitle];
-        activeNewsModalTitle = finalTitle;
-        activeNewsModalFullText = paras.join(" ");
-        if (titleEl) titleEl.textContent = finalTitle;
+    // Build full article from pre-translated fields
+    const fullContent = [displayTitle, displaySummary, displayBody].filter(Boolean).join(". ");
+    
+    if (fullContent) {
+        activeNewsModalTitle = displayTitle;
+        activeNewsModalFullText = fullContent;
+        if (titleEl) titleEl.textContent = displayTitle;
         bodyEl.innerHTML = "";
+        
+        // Split into paragraphs
+        const paras = fullContent.split(". ").filter(p => p.trim().length > 20);
         paras.forEach(pText => {
             const p = document.createElement("p");
             p.className = "text-slate-700 leading-relaxed";
-            p.textContent = pText;
+            p.textContent = pText.trim() + ".";
             bodyEl.appendChild(p);
         });
     } else {
-        activeNewsModalTitle = newsItem.translatedTitle || newsItem.title;
-        activeNewsModalFullText = activeNewsModalTitle;
-        bodyEl.innerHTML = `<p class="text-slate-700">${sanitizeCleanText(activeNewsModalFullText)}</p>`;
+        activeNewsModalTitle = displayTitle;
+        activeNewsModalFullText = displayTitle;
+        bodyEl.innerHTML = `<p class="text-slate-700">${sanitizeCleanText(displayTitle)}</p>`;
     }
 }
 
@@ -6691,7 +7126,14 @@ function switchIpoAutoSubTab(sub) {
     const bAuto = document.getElementById("subTabBtn_autotrade");
     if (bIpo) bIpo.className = isIpo ? "flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm" : "flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition";
     if (bAuto) bAuto.className = !isIpo ? "flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm" : "flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition";
-    if (!isIpo) syncAutoTradeState();
+    if (!isIpo) {
+        syncAutoTradeState();
+        startPaperPnLPolling();
+        startAISwarmTelemetryPolling();
+    } else {
+        stopPaperPnLPolling();
+        stopAISwarmTelemetryPolling();
+    }
 }
 
 function updateAutoTradeRouteBadge() {
@@ -6707,42 +7149,123 @@ function renderAutoTradeUi() {
     const riskLocked = !serverRiskStateLoaded
         || riskPnlSyncFailed
         || SESSION_VAULT.serverRiskState?.isHardLocked === true;
-    const configured = st.enabled === true
+    
+    // Crypto auto-trade state
+    const cryptoConfigured = st.crypto_enabled === true
         && st.globalEnabled === true
         && st.globalKillSwitch !== true
         && !riskLocked;
-    const gated = configured && st.paperLifecycleReady !== true;
-    const on = configured && st.paperLifecycleReady === true;
+    const cryptoGated = cryptoConfigured && st.paperLifecycleReady !== true;
+    const cryptoOn = cryptoConfigured && st.paperLifecycleReady === true;
+    
+    // India auto-trade state
+    const indiaConfigured = st.india_enabled === true
+        && st.globalEnabled === true
+        && st.globalKillSwitch !== true
+        && !riskLocked;
+    const indiaGated = indiaConfigured && st.paperLifecycleReady !== true;
+    const indiaOn = indiaConfigured && st.paperLifecycleReady === true;
+    
+    // Overall state (for backward compatibility with top pill)
+    const anyConfigured = cryptoConfigured || indiaConfigured;
+    const anyOn = cryptoOn || indiaOn;
+    const anyGated = cryptoGated || indiaGated;
+
     const topPill = document.getElementById("autoTradeTopPill");
     const badge = document.getElementById("autoTradeSwitchStatusBadge");
-    const btnOn = document.getElementById("btnAutoTradeOn");
-    const btnOff = document.getElementById("btnAutoTradeOff");
+    
+    // Crypto toggle buttons
+    const cryptoBtnOn = document.getElementById("btnCryptoAutoTradeOn");
+    const cryptoBtnOff = document.getElementById("btnCryptoAutoTradeOff");
+    const cryptoBadge = document.getElementById("cryptoAutoTradeStatusBadge");
+    
+    // India toggle buttons
+    const indiaBtnOn = document.getElementById("btnIndiaAutoTradeOn");
+    const indiaBtnOff = document.getElementById("btnIndiaAutoTradeOff");
+    const indiaBadge = document.getElementById("indiaAutoTradeStatusBadge");
 
     if (topPill) {
-        topPill.textContent = riskLocked ? "AUTO: RISK LOCKED" : on ? "AUTO: ON" : gated ? "AUTO: GATED" : "AUTO: OFF";
-        topPill.className = on
+        topPill.textContent = riskLocked ? "AUTO: RISK LOCKED" : anyOn ? "AUTO: ON" : anyGated ? "AUTO: GATED" : "AUTO: OFF";
+        topPill.className = anyOn
             ? "text-[8px] bg-[#00d09c] text-white font-mono px-2 py-0.5 rounded font-black"
-            : gated
+            : anyGated
                 ? "text-[8px] bg-amber-100 text-amber-700 font-mono px-2 py-0.5 rounded font-bold border border-amber-300"
             : "text-[8px] bg-slate-100 text-slate-600 font-mono px-2 py-0.5 rounded font-bold border border-slate-200";
     }
     if (badge) {
-        badge.textContent = on ? "ON (ACTIVE)" : gated ? "ON (LIFECYCLE BLOCKED)" : "OFF";
-        badge.className = on
+        badge.textContent = anyOn ? "ON (ACTIVE)" : anyGated ? "ON (LIFECYCLE BLOCKED)" : "OFF";
+        badge.className = anyOn
             ? "px-2.5 py-1 rounded-lg bg-[#00d09c]/15 text-[#059669] font-mono font-black text-[10px]"
-            : gated
+            : anyGated
                 ? "px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 font-mono font-black text-[10px]"
             : "px-2.5 py-1 rounded-lg bg-[#eb5b3c]/15 text-[#eb5b3c] font-mono font-black text-[10px]";
     }
-    if (btnOn) {
-        btnOn.disabled = riskLocked || st.globalKillSwitch === true || !serverAutoTradeStateLoaded;
-        btnOn.className = on ? "py-2.5 rounded-xl groww-btn-green text-white shadow-md transition active:scale-95" : "py-2.5 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95";
+
+    // Crypto toggle UI
+    if (cryptoBtnOn) {
+        cryptoBtnOn.disabled = riskLocked || st.globalKillSwitch === true || !serverAutoTradeStateLoaded;
+        cryptoBtnOn.className = cryptoOn ? "py-2 rounded-xl groww-btn-green text-white shadow-md transition active:scale-95" : "py-2 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95";
     }
-    if (btnOff) btnOff.className = !on ? "py-2.5 rounded-xl bg-[#eb5b3c] text-white shadow-md transition active:scale-95" : "py-2.5 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95";
+    if (cryptoBtnOff) cryptoBtnOff.className = !cryptoOn ? "py-2 rounded-xl bg-[#eb5b3c] text-white shadow-md transition active:scale-95" : "py-2 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95";
+    if (cryptoBadge) {
+        cryptoBadge.textContent = cryptoOn ? "ON (ACTIVE)" : cryptoGated ? "ON (LIFECYCLE BLOCKED)" : "OFF";
+        cryptoBadge.className = cryptoOn
+            ? "px-2.5 py-1 rounded-lg bg-[#00d09c]/15 text-[#059669] font-mono font-black text-[10px]"
+            : cryptoGated
+                ? "px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 font-mono font-black text-[10px]"
+            : "px-2.5 py-1 rounded-lg bg-[#eb5b3c]/15 text-[#eb5b3c] font-mono font-black text-[10px]";
+    }
+
+    // India toggle UI
+    if (indiaBtnOn) {
+        indiaBtnOn.disabled = riskLocked || st.globalKillSwitch === true || !serverAutoTradeStateLoaded;
+        indiaBtnOn.className = indiaOn ? "py-2 rounded-xl groww-btn-green text-white shadow-md transition active:scale-95" : "py-2 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95";
+    }
+    if (indiaBtnOff) indiaBtnOff.className = !indiaOn ? "py-2 rounded-xl bg-[#eb5b3c] text-white shadow-md transition active:scale-95" : "py-2 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 transition active:scale-95";
+    if (indiaBadge) {
+        indiaBadge.textContent = indiaOn ? "ON (ACTIVE)" : indiaGated ? "ON (LIFECYCLE BLOCKED)" : "OFF";
+        indiaBadge.className = indiaOn
+            ? "px-2.5 py-1 rounded-lg bg-[#00d09c]/15 text-[#059669] font-mono font-black text-[10px]"
+            : indiaGated
+                ? "px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 font-mono font-black text-[10px]"
+            : "px-2.5 py-1 rounded-lg bg-[#eb5b3c]/15 text-[#eb5b3c] font-mono font-black text-[10px]";
+    }
+
+    // Market status banner
+    const marketBanner = document.getElementById("autoTradeMarketBanner");
+    if (marketBanner) {
+        const indSess = getExchangeSessionStatus("indian");
+        const scope = st.allowedMarkets || "ALL";
+        const showsIndia = scope === "ALL" || scope === "INDIA";
+        if (showsIndia && !indSess.isOpen) {
+            marketBanner.classList.remove("hidden");
+            marketBanner.innerHTML = `
+                <div class="flex items-center justify-between p-2 bg-amber-50 border border-amber-200 rounded-xl text-amber-800">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-circle-exclamation text-amber-500"></i>
+                        <div>
+                            <b class="text-[10px]">Indian Market ${indSess.state === "CLOSED_HOLIDAY" ? "Closed (Holiday)" : indSess.state === "CLOSED_WEEKEND" ? "Closed (Weekend)" : "Closed"}</b>
+                            <span class="block text-[9px] text-amber-700">${indSess.reason}</span>
+                        </div>
+                    </div>
+                    <span class="text-[9px] font-mono text-amber-600">Next Open: ${indSess.next_open_ist ? new Date(indSess.next_open_ist).toLocaleString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }) : "--"} IST</span>
+                </div>`;
+        } else {
+            marketBanner.classList.add("hidden");
+        }
+    }
 
     const budget = Number(st.dailyBudgetInr || 10000);
     const used = Number(st.usedBudgetInr || 0) + Number(st.reservedBudgetInr || 0);
     const left = Math.max(0, budget - used);
+
+    // Risk guard details
+    const riskState = SESSION_VAULT.serverRiskState || {};
+    const tradesToday = Number(riskState.tradesToday || 0);
+    const maxDailyTrades = Number(riskState.maxDailyTrades || 5);
+    const dailyPnlInr = Number(riskState.dailyPnlInr || 0);
+    const dailyLossLimit = Number(riskState.dailyLossLimitInr || 0);
+    const dailyLossPct = dailyLossLimit > 0 ? ((Math.abs(dailyPnlInr) / dailyLossLimit) * 100).toFixed(1) : 0;
 
     const remBadge = document.getElementById("autoTradeRemainingBadge");
     const inpBudget = document.getElementById("autoTradeDailyBudgetInput");
@@ -6750,6 +7273,8 @@ function renderAutoTradeUi() {
     const elLim = document.getElementById("atStatLimit");
     const elUsed = document.getElementById("atStatUsed");
     const elPos = document.getElementById("atStatPos");
+    const elTrades = document.getElementById("atStatTrades");
+    const elDailyPnl = document.getElementById("atStatDailyPnl");
 
     if (remBadge) remBadge.textContent = `Left: ₹${Math.round(left).toLocaleString("en-IN")}`;
     if (inpBudget && document.activeElement !== inpBudget) inpBudget.value = String(budget);
@@ -6757,6 +7282,11 @@ function renderAutoTradeUi() {
     if (elLim) elLim.textContent = `₹${Math.round(budget).toLocaleString("en-IN")}`;
     if (elUsed) elUsed.textContent = `₹${Math.round(used).toLocaleString("en-IN")}`;
     if (elPos) elPos.textContent = `${st.activeAutoPositions || 0} / ${st.maxOpenAutoPositions || 3}`;
+    if (elTrades) elTrades.textContent = `${tradesToday} / ${maxDailyTrades}`;
+    if (elDailyPnl) {
+        const pnlColor = dailyPnlInr >= 0 ? "text-[#059669]" : "text-[#eb5b3c]";
+        elDailyPnl.innerHTML = `<span class="${pnlColor}">₹${Math.round(dailyPnlInr).toLocaleString("en-IN")}</span> / ₹${Math.round(dailyLossLimit).toLocaleString("en-IN")} (${dailyLossPct}%)`;
+    }
     updateAutoTradeRouteBadge();
 
     const logEl = document.getElementById("autoTradeExecutionLog");
@@ -6787,7 +7317,7 @@ async function syncAutoTradeState() {
         window.AUTO_TRADE_STATE = res.data.automation;
         serverAutoTradeStateLoaded = true;
         renderAutoTradeUi();
-        await pollBackendOpportunities();
+        await Promise.all([pollBackendOpportunities(), loadExecutionLog()]);
         return true;
     } catch (error) {
         serverAutoTradeStateLoaded = false;
@@ -6803,6 +7333,42 @@ async function syncAutoTradeState() {
     }
 }
 
+async function loadExecutionLog() {
+    if (!auth.currentUser) return;
+    try {
+        const res = await fastApiRequest("/automation/execution-log", { method: "GET", query: "limit=100" });
+        if (res.ok && Array.isArray(res.data?.logs)) {
+            autoTradeExecutionLog = res.data.logs.map(l => ({
+                symbol: l.symbol,
+                side: l.side,
+                qty: l.quantity,
+                entry: l.entry_price,
+                sl: l.stop_loss,
+                tp: l.take_profit,
+                score: l.score,
+                status: l.status,
+                ok: l.status === "CLAIMED" || l.status === "FILLED",
+                isAuto: l.is_auto_trade,
+                created_at: l.created_at
+            }));
+        }
+    } catch (e) {
+        console.warn("Failed to load execution log:", e);
+    }
+}
+
+async function saveExecutionLogToBackend(entry) {
+    if (!auth.currentUser) return;
+    try {
+        await fastApiRequest("/automation/execution-log", {
+            method: "POST",
+            body: entry
+        });
+    } catch (e) {
+        console.warn("Failed to save execution log:", e);
+    }
+}
+
 async function pollBackendOpportunities() {
     if (!auth.currentUser || !isTerminalUnlocked) return;
     const res = await fastApiRequest("/automation/opportunities");
@@ -6815,9 +7381,34 @@ async function runBackendAutomationScan() {
     if (!auth.currentUser || !isTerminalUnlocked || document.hidden || backendAutomationScanBusy) return;
     backendAutomationScanBusy = true;
     try {
-        const scope = window.AUTO_TRADE_STATE?.allowedMarkets || "ALL";
-        const markets = scope === "ALL" ? ["CRYPTO", "INDIA"] : [scope];
-        const responses = await Promise.all(markets.map(market => fastApiRequest("/automation/scan", {
+        const st = window.AUTO_TRADE_STATE || {};
+        const markets = [];
+        
+        // Check crypto toggle independently
+        if (st.crypto_enabled === true) {
+            markets.push("CRYPTO");
+        }
+        
+        // Check india toggle independently
+        if (st.india_enabled === true) {
+            const indSess = getExchangeSessionStatus("indian");
+            if (indSess.isOpen) {
+                markets.push("INDIA");
+            } else {
+                console.log(`[Automation] Skipping INDIA scan - market ${indSess.state}: ${indSess.reason}`);
+            }
+        }
+        
+        // Also respect allowedMarkets scope as a filter
+        const scope = st.allowedMarkets || "ALL";
+        const filteredMarkets = markets.filter(m => scope === "ALL" || scope === m);
+        
+        if (filteredMarkets.length === 0) {
+            console.log("[Automation] No markets enabled for scanning");
+            return;
+        }
+        
+        const responses = await Promise.all(filteredMarkets.map(market => fastApiRequest("/automation/scan", {
             method: "POST",
             body: { market, timeframe: "15m", limit: 10 },
             timeoutMs: 30000
@@ -6827,7 +7418,7 @@ async function runBackendAutomationScan() {
             if (response.ok && Array.isArray(response.data?.opportunities)) {
                 opportunities.push(...response.data.opportunities);
             } else if (!response.ok) {
-                console.warn(`[Automation Scan:${markets[index]}] Server scan unavailable:`, response.data?.detail || response.status);
+                console.warn(`[Automation Scan:${filteredMarkets[index]}] Server scan unavailable:`, response.data?.detail || response.status);
             }
         });
         enqueueOpportunities(opportunities);
@@ -6836,7 +7427,7 @@ async function runBackendAutomationScan() {
     }
 }
 
-async function toggleAutoTradeSwitch(enableBool) {
+async function toggleCryptoAutoTrade(enableBool) {
     if (!checkProAccess()) return;
     if (enableBool && (
         !serverRiskStateLoaded
@@ -6848,18 +7439,52 @@ async function toggleAutoTradeSwitch(enableBool) {
         alert("Server risk or kill-switch state blocks auto-trading.");
         return;
     }
-    if (enableBool && !confirm("Enable paper auto-trading?\n\nOnly server-validated opportunities scoring at least 90/100 can be considered. 70–89 scores remain manual alerts. Live broker execution remains disabled. Automatic entries remain gated until paper-position lifecycle management is ready.")) return;
+    if (enableBool && !confirm("Enable Crypto paper auto-trading?\n\nRuns 24/7 using crypto-specific logic (volatility, funding/orderbook depth, crypto sentiment). Only server-validated opportunities scoring at least 90/100 can be considered. 70–89 scores remain manual alerts. Live broker execution remains disabled.")) return;
 
     const res = await fastApiRequest("/automation/settings", {
         method: "PUT",
-        body: { enabled: enableBool }
+        body: { crypto_enabled: enableBool }
     });
     if (res.ok && res.data?.automation) {
         window.AUTO_TRADE_STATE = { ...window.AUTO_TRADE_STATE, ...res.data.automation };
         renderAutoTradeUi();
     } else {
-        alert(res.data?.detail || "Failed to update Auto Trade switch.");
+        alert(res.data?.detail || "Failed to update Crypto Auto Trade switch.");
     }
+}
+
+async function toggleIndiaAutoTrade(enableBool) {
+    if (!checkProAccess()) return;
+    if (enableBool && (
+        !serverRiskStateLoaded
+        || riskPnlSyncFailed
+        || !serverAutoTradeStateLoaded
+        || SESSION_VAULT.serverRiskState?.isHardLocked === true
+        || window.AUTO_TRADE_STATE?.globalKillSwitch === true
+    )) {
+        alert("Server risk or kill-switch state blocks auto-trading.");
+        return;
+    }
+    if (enableBool && !confirm("Enable India (Shoonya) paper auto-trading?\n\nRuns ONLY during Indian market hours (09:15–15:30 IST, weekdays, non-holidays) using Indian market logic (Nifty/BankNifty/Sensex, FII/DII flows, equity intraday). Only server-validated opportunities scoring at least 90/100 can be considered. 70–89 scores remain manual alerts. Live broker execution remains disabled.")) return;
+
+    const res = await fastApiRequest("/automation/settings", {
+        method: "PUT",
+        body: { india_enabled: enableBool }
+    });
+    if (res.ok && res.data?.automation) {
+        window.AUTO_TRADE_STATE = { ...window.AUTO_TRADE_STATE, ...res.data.automation };
+        renderAutoTradeUi();
+    } else {
+        alert(res.data?.detail || "Failed to update India Auto Trade switch.");
+    }
+}
+
+// Legacy function for backward compatibility - delegates to both
+async function toggleAutoTradeSwitch(enableBool) {
+    await Promise.all([
+        toggleCryptoAutoTrade(enableBool),
+        toggleIndiaAutoTrade(enableBool)
+    ]);
 }
 
 async function saveAutoTradeBudgetConfig() {
@@ -6885,11 +7510,39 @@ async function saveAutoTradeBudgetConfig() {
 
 async function fetchRealIpoData() {
     const container = document.getElementById("ipoFeedContainer");
-    if (container) container.innerHTML = `<div class="groww-card p-4 text-center text-slate-500 font-mono text-[10px]">Loading live IPO &amp; GMP board...</div>`;
+    if (container) container.innerHTML = `<div class="groww-card p-4 text-center text-slate-500 font-mono text-[10px]"><i class="fa-solid fa-spinner animate-spin text-[#00d09c] mr-1"></i> Loading live IPO & GMP board...</div>`;
+    
     const res = await secureApiCall("ipo_feed", { method: "GET" });
     if (res.ok && res.data?.success && Array.isArray(res.data.items)) {
         liveIpoList = res.data.items;
-        renderIpoList();
+        
+        // Update GMP feed status badge
+        const statusBadge = document.getElementById("ipoGmpFeedBadge");
+        if (statusBadge) {
+            const status = res.data.gmpFeed || "unknown";
+            const verifiedCount = res.data.gmpVerifiedCount || 0;
+            const totalCount = res.data.gmpTotalCount || 0;
+            let badgeClass = "bg-slate-100 text-slate-600";
+            let badgeText = "GMP: Unknown";
+            
+            if (status === "verified") {
+                badgeClass = "bg-[#00d09c]/15 text-[#059669]";
+                badgeText = `GMP: Verified (${verifiedCount}/${totalCount})`;
+            } else if (status === "healthy" || status === "single_source") {
+                badgeClass = "bg-amber-100 text-amber-700";
+                badgeText = `GMP: Single Source (${totalCount})`;
+            } else if (status === "cached") {
+                badgeClass = "bg-slate-100 text-slate-600";
+                badgeText = "GMP: Cached";
+            } else {
+                badgeClass = "bg-[#eb5b3c]/15 text-[#eb5b3c]";
+                badgeText = "GMP: Unavailable";
+            }
+            statusBadge.className = `px-2 py-0.5 rounded text-[8px] font-mono font-bold ${badgeClass}`;
+            statusBadge.textContent = badgeText;
+        }
+        
+renderIpoList();
     } else if (container) {
         container.innerHTML = `<div class="groww-card p-4 text-center text-[#eb5b3c] font-mono text-[10px]">IPO GMP feed temporarily unavailable.</div>`;
     }
@@ -6919,25 +7572,45 @@ function renderIpoList() {
             ? `<div class="flex items-end space-x-1 h-7 pt-1">${hist.map(h => `<div title="${sanitizeCleanText(h.date)}: ₹${h.gmp}" class="flex-1 rounded-t ${h.gmp >= 0 ? "bg-[#00d09c]" : "bg-[#eb5b3c]"}" style="height:${Math.max(20, Math.round((Math.abs(h.gmp) / maxG) * 100))}%"></div>`).join("")}</div>`
             : `<span class="text-[8.5px] text-slate-400 font-mono">Tracking daily GMP history from today...</span>`;
         const updTxt = i.lastUpdatedAt ? new Date(i.lastUpdatedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "--";
+        
+        // GMP verified badge
+        const gmpVerified = i.gmpVerified === true;
+        const gmpSources = Array.isArray(i.gmpSources) ? i.gmpSources : [];
+        const sourceBadge = gmpVerified 
+            ? `<span class="px-1.5 py-0.5 rounded text-[7px] font-mono font-bold bg-[#00d09c]/15 text-[#059669] border border-[#00d09c]/30">✓ Verified (${gmpSources.join(",")})</span>`
+            : (i.gmpSources && i.gmpSources.length > 0 
+                ? `<span class="px-1.5 py-0.5 rounded text-[7px] font-mono font-bold bg-amber-100 text-amber-700">Source: ${i.gmpSources.join(",")}</span>`
+                : `<span class="px-1.5 py-0.5 rounded text-[7px] font-mono font-bold bg-slate-100 text-slate-500">GMP: Single Source</span>`);
+
+        // Subscription % badge
+        const subPct = i.subscriptionPct !== undefined ? i.subscriptionPct : 0;
+        const subPctBadge = subPct > 0 
+            ? `<span class="px-1.5 py-0.5 rounded text-[7px] font-mono font-bold ${subPct >= 100 ? "bg-[#00d09c]/15 text-[#059669]" : subPct >= 50 ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}">${subPct >= 100 ? "FULL" : subPct}%</span>`
+            : `<span class="px-1.5 py-0.5 rounded text-[7px] font-mono font-bold bg-slate-100 text-slate-500">--%</span>`;
 
         return `
         <div class="groww-card p-3.5 space-y-2 bg-white">
             <div class="flex items-center justify-between">
-                <div>
+                <div class="flex items-center gap-2">
                     <h4 class="text-xs font-black text-slate-900 heading-font">${sanitizeCleanText(i.name)}</h4>
-                    <span class="text-[8px] text-slate-400 font-mono">Source: ${sanitizeCleanText(i.source || "IPOWatch")} • Updated ${updTxt}</span>
+                    ${gmpVerified ? `<span class="px-1.5 py-0.5 rounded text-[7px] font-mono font-bold bg-[#00d09c]/15 text-[#059669] border border-[#00d09c]/30">✓ Multi-source Verified</span>` : ""}
                 </div>
-                <span class="text-[8px] px-2 py-0.5 rounded font-mono font-bold uppercase ${i.type === "sme" ? "bg-amber-500/15 text-amber-600" : "bg-[#00d09c]/15 text-[#059669]"}">${sanitizeCleanText(i.type)}</span>
+                <div class="flex items-center gap-1.5">
+                    ${sourceBadge}
+                    ${subPctBadge}
+                    <span class="text-[8px] px-2 py-0.5 rounded font-mono font-bold uppercase ${i.type === "sme" ? "bg-amber-500/15 text-amber-600" : "bg-[#00d09c]/15 text-[#059669]"}">${sanitizeCleanText(i.type)}</span>
+                </div>
             </div>
-            <div class="grid grid-cols-3 gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 text-[9.5px] mono-font">
+            <div class="grid grid-cols-4 gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 text-[9.5px] mono-font">
                 <div><span class="text-slate-500 block text-[8px]">Indicative GMP</span><b class="text-[#00d09c]">${sanitizeCleanText(i.gmp)}</b></div>
                 <div><span class="text-slate-500 block text-[8px]">Price Band</span><b class="text-slate-900">${sanitizeCleanText(i.band)}</b></div>
-                <div class="text-right"><span class="text-slate-500 block text-[8px]">Subscription</span><b class="text-blue-600">${sanitizeCleanText(i.sub)}</b></div>
+                <div><span class="text-slate-500 block text-[8px]">Subscription</span>${subPctBadge}</div>
+                <div class="text-right"><span class="text-slate-500 block text-[8px]">Lot Size</span><b class="text-blue-600">${sanitizeCleanText(i.sub)}</b></div>
             </div>
             <div class="bg-slate-50 px-2.5 py-1.5 rounded-xl border border-slate-200">
                 <div class="flex items-center justify-between text-[8px] font-mono text-slate-500">
                     <span>GMP Trend (${hist.length} pts)</span>
-                    <span>Size: ${sanitizeCleanText(i.size || "NSE/BSE")}</span>
+                    <span>Updated: ${updTxt} • ${sanitizeCleanText(i.source || "Aggregated")}</span>
                 </div>
                 ${barsHtml}
             </div>
@@ -7030,6 +7703,20 @@ function bootArafTerminal() {
     loadLocalTerminalPreferences();
     loadLocalRiskConfig();
     void startSplashScreen();
+    loadNseHolidays();
+
+    // Mobile/browser back button: close modals or navigate tabs
+    window.addEventListener("popstate", (event) => {
+        const openModals = document.querySelectorAll(".fixed.inset-0.z-50:not(.hidden)");
+        if (openModals.length > 0) {
+            openModals.forEach(modal => modal.classList.add("hidden"));
+            history.pushState(null, "", location.href); // Prevent further back navigation
+            return;
+        }
+        if (event.state?.tab) {
+            switchTab(event.state.tab);
+        }
+    });
 
     try {
         if ("serviceWorker" in navigator) {
@@ -7059,10 +7746,10 @@ function bootArafTerminal() {
         }, 30000);
 
         if (marketPollIntervalId) clearInterval(marketPollIntervalId);
-        marketPollIntervalId = setInterval(() => {
-            fetchMasterOrPublicIndianFeed();
-            if (SESSION_VAULT.coindcxLinked) syncCoinDcxOrBinanceFeed();
-        }, 5000);
+        // Connect to backend price WebSocket (replaces 5s polling)
+        connectBackendPriceWs();
+        // Keep Binance WS for depth/L2 data (100ms updates)
+        connectBinanceWs();
 
         if (freshnessIntervalId) clearInterval(freshnessIntervalId);
         freshnessIntervalId = setInterval(checkFeedFreshnessWatchdog, 3000);

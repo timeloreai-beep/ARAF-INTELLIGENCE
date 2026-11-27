@@ -6,7 +6,7 @@ import time
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import indicators, smc
+from . import indicators, smc, shikari
 
 
 VERSION = "2.0.0-ADDITIVE"
@@ -32,6 +32,11 @@ ENGINE_METADATA = {
     "ENG18_DRIFT_MONITOR": ("Strategy Drift Monitor", ("indian", "crypto", "commodity")),
     "ENG19_WF_ROBUSTNESS": ("Walk-Forward Robustness", ("indian", "crypto", "commodity")),
     "ENG20_FEED_CONSENSUS": ("Data Anomaly & Consensus", ("indian", "crypto", "commodity")),
+    "ENG21_SHIKARI_SWEEP_RECLAIM": ("Shikari Stop-Hunt Sweep Reclaim", ("indian", "crypto", "commodity")),
+    "ENG22_SHIKARI_WHALE_ABSORPTION": ("Shikari Whale Absorption L2", ("crypto",)),
+    "ENG23_SHIKARI_DUMP_SHIELD": ("Shikari Pump-Dump Shield", ("crypto",)),
+    "ENG24_SHIKARI_FII_DII_OI": ("Shikari FII/DII OI Alignment", ("indian",)),
+    "ENG25_SHIKARI_HUNTER_UNWIND": ("Shikari Hunter Unwind Trigger", ("indian", "crypto", "commodity")),
 }
 
 
@@ -665,6 +670,146 @@ def _feed_consensus(ctx: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _shikari_sweep_reclaim(ctx: dict[str, Any]) -> dict[str, Any]:
+    candles = ctx.get("candles", [])
+    result = shikari.detect_hunter_sweep_reclaim(candles)
+    if not result:
+        return _result(
+            "ENG21_SHIKARI_SWEEP_RECLAIM", ctx, status="UNAVAILABLE", reason="NO_SWEEP_RECLAIM_PATTERN",
+            explain_bn="স্টপ-হান্ট সوییপ ও রিক্লেইম প্যাটার্ন খুঁজে পাওয়া যায়নি।",
+        )
+    direction = result["direction"]
+    rvol = result["rvol"]
+    aligned = direction == ctx["base_side"] or ctx["base_side"] == "NEUTRAL"
+    conflict = (ctx["base_side"] == "BUY" and direction == "SELL") or (ctx["base_side"] == "SELL" and direction == "BUY")
+    status = "FAIL" if conflict else "PASS"
+    reason = f"HUNTER_SWEEP_RECLAIM_{result['type']}"
+    evidence = result["evidence"]
+    explain_bn = f"শিকারী সوییপ রিক্লেইম: {result['type']} (RVOL {rvol:.1f}x, লেভেল {result['level']:.2f})।"
+    return _result(
+        "ENG21_SHIKARI_SWEEP_RECLAIM", ctx, status=status, reason=reason, direction=direction,
+        score_delta=6 if aligned and not conflict else -6 if conflict else 3,
+        evidence=evidence, source="SHIKARI", quality="LIVE", explain_bn=explain_bn,
+    )
+
+
+def _shikari_whale_absorption(ctx: dict[str, Any]) -> dict[str, Any]:
+    if ctx["category"] != "crypto":
+        return _result(
+            "ENG22_SHIKARI_WHALE_ABSORPTION", ctx, status="NOT_APPLICABLE", reason="CRYPTO_ONLY_ENGINE",
+            explain_bn="এই ইঞ্জিন শুধুমাত্র ক্রিপ্টো বাজারের জন্য প্রযোজ্য।",
+        )
+    candles = ctx.get("candles", [])
+    l2 = ctx.get("l2")
+    result = shikari.detect_whale_absorption_l2(candles, l2)
+    if not result:
+        return _result(
+            "ENG22_SHIKARI_WHALE_ABSORPTION", ctx, status="UNAVAILABLE", reason="NO_WHALE_ABSORPTION",
+            explain_bn="হোয়েল অ্যাবসর্পশন প্যাটার্ন খুঁজে পাওয়া যায়নি।",
+        )
+    direction = result["direction"]
+    rvol = result["rvol"]
+    wall_alert = result.get("wall_alert")
+    aligned = direction == ctx["base_side"] or ctx["base_side"] == "NEUTRAL"
+    conflict = (ctx["base_side"] == "BUY" and direction == "SELL") or (ctx["base_side"] == "SELL" and direction == "BUY")
+    status = "FAIL" if conflict else "PASS"
+    reason = f"WHALE_ABSORPTION_{wall_alert or 'DETECTED'}"
+    evidence = result["evidence"]
+    explain_bn = f"হোয়েল অ্যাবসর্পশন: {direction} (RVOL {rvol:.1f}x, বডি {result['body_pct']:.2f}%)।"
+    return _result(
+        "ENG22_SHIKARI_WHALE_ABSORPTION", ctx, status=status, reason=reason, direction=direction,
+        score_delta=5 if aligned and not conflict else -5 if conflict else 2,
+        evidence=evidence, source="SHIKARI_L2", quality="LIVE", explain_bn=explain_bn,
+    )
+
+
+def _shikari_dump_shield(ctx: dict[str, Any]) -> dict[str, Any]:
+    if ctx["category"] != "crypto":
+        return _result(
+            "ENG23_SHIKARI_DUMP_SHIELD", ctx, status="NOT_APPLICABLE", reason="CRYPTO_ONLY_ENGINE",
+            explain_bn="এই ইঞ্জিন শুধুমাত্র ক্রিপ্টো বাজারের জন্য প্রযোজ্য।",
+        )
+    candles = ctx.get("candles", [])
+    l2 = ctx.get("l2")
+    result = shikari.detect_pump_dump_shield(candles, l2)
+    if not result:
+        return _result(
+            "ENG23_SHIKARI_DUMP_SHIELD", ctx, status="PASS", reason="NO_DUMP_WARNING",
+            direction="NEUTRAL", score_delta=1,
+            evidence="No pump-dump exhaustion detected", explain_bn="পাম্প-ডাম্প এগজস্টশন সিগন্যাল নেই।",
+        )
+    direction = result["direction"]
+    rvol = result["rvol"]
+    move_pct = result["move_pct"]
+    conflict = (ctx["base_side"] == "BUY" and direction == "SELL") or (ctx["base_side"] == "SELL" and direction == "BUY")
+    status = "FAIL" if conflict else "WARN"
+    reason = "WHALE_DUMP_WARNING"
+    evidence = result["evidence"]
+    explain_bn = f"হোয়েল ডাম্প সতর্কতা: {move_pct:.1f}% পাম্প, RVOL {rvol:.1f}x, ডিস্ট্রিবিউশন। এন্ট্রি ব্লক।"
+    return _result(
+        "ENG23_SHIKARI_DUMP_SHIELD", ctx, status=status, reason=reason, direction=direction,
+        score_delta=-10 if conflict else -5,
+        evidence=evidence, source="SHIKARI_L2", quality="LIVE", explain_bn=explain_bn,
+    )
+
+
+def _shikari_fii_dii_oi(ctx: dict[str, Any]) -> dict[str, Any]:
+    if ctx["category"] != "indian":
+        return _result(
+            "ENG24_SHIKARI_FII_DII_OI", ctx, status="NOT_APPLICABLE", reason="INDIAN_ONLY_ENGINE",
+            explain_bn="এই ইঞ্জিন শুধুমাত্র ইন্ডিয়ান বাজারের জন্য প্রযোজ্য।",
+        )
+    candles = ctx.get("candles", [])
+    fii_dii = ctx.get("fii_dii")
+    oi_data = ctx.get("oi_data")
+    result = shikari.detect_fii_dii_oi_alignment(candles, fii_dii, oi_data)
+    if not result:
+        return _result(
+            "ENG24_SHIKARI_FII_DII_OI", ctx, status="UNAVAILABLE", reason="NO_FII_DII_OI_DATA",
+            explain_bn="FII/DII ও OI ডেটা অনুপলব্ধ।",
+        )
+    direction = result["direction"]
+    aligned = result["aligned"]
+    conflict = result["conflict"]
+    oi_state = result["oi_state"]
+    fii_net = result["fii_net_cr"]
+    dii_net = result["dii_net_cr"]
+    status = "FAIL" if conflict else "PASS" if aligned else "WARN"
+    reason = f"FII_DII_OI_{oi_state}_{'ALIGNED' if aligned else 'CONFLICT' if conflict else 'NEUTRAL'}"
+    evidence = result["evidence"]
+    explain_bn = f"FII/DII OI অ্যালাইনমেন্ট: {oi_state} (FII ₹{fii_net:+.0f}Cr, DII ₹{dii_net:+.0f}Cr) -> {result['action']}।"
+    return _result(
+        "ENG24_SHIKARI_FII_DII_OI", ctx, status=status, reason=reason, direction=direction,
+        score_delta=5 if aligned and not conflict else -8 if conflict else 1,
+        evidence=evidence, source="SHOONYA_FII_DII", quality="LIVE" if aligned else "DELAYED", explain_bn=explain_bn,
+    )
+
+
+def _shikari_hunter_unwind(ctx: dict[str, Any]) -> dict[str, Any]:
+    candles = ctx.get("candles", [])
+    l2 = ctx.get("l2")
+    fii_dii = ctx.get("fii_dii")
+    result = shikari.detect_hunter_unwinding_distribution(candles, l2, fii_dii)
+    if not result:
+        return _result(
+            "ENG25_SHIKARI_HUNTER_UNWIND", ctx, status="PASS", reason="NO_UNWIND_SIGNAL",
+            direction="NEUTRAL", score_delta=1,
+            evidence="No hunter unwinding detected", explain_bn="শিকারী আনওয়াইন্ডিং সিগন্যাল নেই।",
+        )
+    direction = result["direction"]
+    rvol = result["rvol"]
+    sweep_type = result.get("sweep_type")
+    status = "FAIL"
+    reason = "HUNTER_UNWINDING_TRIGGER"
+    evidence = result["evidence"]
+    explain_bn = f"শিকারী আনওয়াইন্ডিং সনাক্ত! {evidence} -> ১০০-এজেন্ট স্বার্মে তৎক্ষণাৎ একজিট ট্রিগার।"
+    return _result(
+        "ENG25_SHIKARI_HUNTER_UNWIND", ctx, status=status, reason=reason, direction=direction,
+        score_delta=-15,
+        evidence=evidence, source="SHIKARI", quality="LIVE", explain_bn=explain_bn,
+    )
+
+
 def evaluate_engine_suite(payload: dict[str, Any]) -> dict[str, Any]:
     category = payload.get("category") or "indian"
     if category not in {"indian", "crypto", "commodity"}:
@@ -703,6 +848,11 @@ def evaluate_engine_suite(payload: dict[str, Any]) -> dict[str, Any]:
         _drift(ctx),
         _walk_forward(ctx),
         _feed_consensus(ctx),
+        _shikari_sweep_reclaim(ctx),
+        _shikari_whale_absorption(ctx),
+        _shikari_dump_shield(ctx),
+        _shikari_fii_dii_oi(ctx),
+        _shikari_hunter_unwind(ctx),
     ]
     passed = sum(item["status"] == "PASS" for item in results)
     failed = [item for item in results if item["status"] == "FAIL"]

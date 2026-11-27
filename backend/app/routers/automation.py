@@ -26,11 +26,13 @@ from ..services.apex_predator import (
     volume_profile_confirmation,
 )
 from ..services.automation import OpportunityHub, trading_day_ist
+from ..services.ai_swarm import get_ai_swarm_service
 from ..services.paper_lifecycle import (
     MANUAL_EXIT_COOLDOWN,
     close_paper_position_manually,
 )
 from ..services.options import INDEX_SPOT_INSTRUMENTS, select_liquid_shoonya_option
+from ..services.scheduler import is_india_market_open, get_india_market_status
 from ..services.scanner import UniverseScanner
 from ..services.risk_persistence import load_risk_state, persist_risk_state
 from .orders import _place_order, place_order
@@ -40,7 +42,8 @@ router = APIRouter(prefix="/automation", tags=["automation"])
 
 
 class AutomationSettingsPayload(BaseModel):
-    enabled: bool | None = None
+    crypto_enabled: bool | None = None
+    india_enabled: bool | None = None
     daily_budget_inr: float | None = Field(default=None, ge=1000, le=100_000_000)
     allowed_markets: Literal["ALL", "INDIA", "CRYPTO"] | None = None
 
@@ -49,6 +52,18 @@ class AutomationScanPayload(BaseModel):
     market: Literal["INDIA", "CRYPTO"] = "CRYPTO"
     timeframe: Literal["1m", "5m", "15m", "1h"] = "15m"
     limit: int = Field(default=10, ge=1, le=30)
+
+
+class AutoTradeExecutionLogEntry(BaseModel):
+    symbol: str
+    side: str
+    quantity: float
+    entry_price: float
+    stop_loss: float
+    take_profit: float
+    score: int
+    status: str
+    is_auto_trade: bool = False
 
 
 def _hub(request: Request) -> OpportunityHub:
@@ -143,16 +158,24 @@ async def update_automation_settings(
 ) -> dict:
     settings = await _load_persisted_settings(request, subject)
     updates = payload.model_dump(exclude_none=True)
+    # Check which markets are being enabled BEFORE popping
+    enabling_crypto = updates.get("crypto_enabled") is True
+    enabling_india = updates.get("india_enabled") is True
     if "daily_budget_inr" in updates:
         settings["dailyBudgetInr"] = updates.pop("daily_budget_inr")
     if "allowed_markets" in updates:
         settings["allowedMarkets"] = updates.pop("allowed_markets")
+    if "crypto_enabled" in updates:
+        settings["crypto_enabled"] = updates.pop("crypto_enabled")
+    if "india_enabled" in updates:
+        settings["india_enabled"] = updates.pop("india_enabled")
     settings.update(updates)
 
     database = request.app.state.database
     if not database.enabled:
         raise HTTPException(status_code=503, detail="Persistent automation settings are unavailable")
-    if updates.get("enabled") is True:
+    # Validate risk/kill-switch only when enabling a specific market
+    if enabling_crypto or enabling_india:
         try:
             risk_state = await load_risk_state(
                 request,
@@ -223,6 +246,8 @@ async def get_paper_positions(
                 "entry": float(position.entry_price),
                 "stopLoss": float(position.stop_loss),
                 "takeProfit": float(position.take_profit),
+                "trailingDistance": float(position.trailing_distance),
+                "favorablePrice": float(position.favorable_price),
                 "status": position.status,
                 "isAutoTrade": bool(position.is_auto_trade),
                 "exitPrice": float(position.exit_price) if position.exit_price is not None else None,
@@ -233,6 +258,67 @@ async def get_paper_positions(
             for position in positions
         ],
     }
+
+
+@router.get("/execution-log")
+async def get_execution_log(
+    request: Request,
+    subject: str = Depends(current_subject),
+    limit: int = 100,
+) -> dict:
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="Execution log persistence is unavailable")
+    try:
+        logs = await database.get_auto_trade_execution_log(subject, limit=limit)
+    except (RuntimeError, SQLAlchemyError) as exc:
+        raise HTTPException(status_code=503, detail="Execution log is unavailable") from exc
+    return {
+        "success": True,
+        "logs": [
+            {
+                "id": log.id,
+                "symbol": log.symbol,
+                "side": log.side,
+                "quantity": float(log.quantity),
+                "entry_price": float(log.entry_price),
+                "stop_loss": float(log.stop_loss),
+                "take_profit": float(log.take_profit),
+                "score": log.score,
+                "status": log.status,
+                "is_auto_trade": log.is_auto_trade,
+                "created_at": log.created_at.isoformat(),
+            }
+            for log in logs
+        ],
+    }
+
+
+@router.post("/execution-log")
+async def add_execution_log(
+    payload: AutoTradeExecutionLogEntry,
+    request: Request,
+    subject: str = Depends(current_subject),
+) -> dict:
+    database = request.app.state.database
+    if not database.enabled:
+        raise HTTPException(status_code=503, detail="Execution log persistence is unavailable")
+    try:
+        status = await database.add_auto_trade_execution_log(
+            user_id=subject,
+            symbol=payload.symbol,
+            side=payload.side,
+            quantity=payload.quantity,
+            entry_price=payload.entry_price,
+            stop_loss=payload.stop_loss,
+            take_profit=payload.take_profit,
+            score=payload.score,
+            status=payload.status,
+            is_auto_trade=payload.is_auto_trade,
+        )
+    except (RuntimeError, SQLAlchemyError) as exc:
+        raise HTTPException(status_code=503, detail="Execution log could not be saved") from exc
+    return {"success": True, "persistence": status.as_dict()}
 
 
 @router.post("/positions/{position_id}/exit")
@@ -359,6 +445,13 @@ async def manually_exit_paper_position(
             side=position.side,
             blocked_until=datetime.now(timezone.utc) + MANUAL_EXIT_COOLDOWN,
         )
+        # Terminate AI Swarm for this closed order
+        try:
+            swarm = await get_ai_swarm_service(request.app)
+            await swarm.terminate_swarm(position.client_order_id, closed["exit_reason"] or "MANUAL_EXIT")
+            logger.info("AI Swarm terminated for manual exit order %s", position.client_order_id)
+        except Exception as swarm_exc:
+            logger.exception("Failed to terminate AI Swarm for manual exit: %s", swarm_exc)
         return {
             "success": True,
             "position_id": position.id,
@@ -398,9 +491,38 @@ async def scan_for_opportunities(
         control = await database.get_admin_control()
     except (RuntimeError, SQLAlchemyError) as exc:
         raise HTTPException(status_code=503, detail="Global automation controls are unavailable") from exc
+    
+    # Check if the specific market is enabled for this user
+    if payload.market == "CRYPTO" and not user_settings.get("crypto_enabled"):
+        return {
+            "success": True,
+            "evaluated": 0,
+            "opportunities": [],
+            "blocked": {"CRYPTO_AUTO_TRADE_DISABLED": 1},
+        }
+    if payload.market == "INDIA" and not user_settings.get("india_enabled"):
+        return {
+            "success": True,
+            "evaluated": 0,
+            "opportunities": [],
+            "blocked": {"INDIA_AUTO_TRADE_DISABLED": 1},
+        }
+    
     news_engine = getattr(request.app.state, "news_engine", None)
     news_guard_active = bool(news_engine and news_engine.priority_guard_active)
     scanner = getattr(request.app.state, "universe_scanner", None) or UniverseScanner()
+
+    market_status = get_india_market_status()
+    if payload.market == "INDIA":
+        if not market_status["is_open"]:
+            return {
+                "success": True,
+                "evaluated": 0,
+                "opportunities": [],
+                "blocked": {"INDIA_MARKET_CLOSED": 1},
+                "market_status": market_status,
+            }
+
     try:
         usd_inr = await _usd_inr_rate() if payload.market == "CRYPTO" else 1.0
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as exc:
@@ -410,6 +532,7 @@ async def scan_for_opportunities(
             "opportunities": [],
             "blocked": {"USD_INR_FX_UNAVAILABLE": 1},
             "detail": str(exc),
+            "market_status": market_status if payload.market == "INDIA" else None,
         }
 
     shoonya: ShoonyaAdapter | None = None
@@ -621,7 +744,7 @@ async def scan_for_opportunities(
                         "capital_inr": float(risk_config.capital_inr),
                         "usd_inr": usd_inr,
                     },
-                    "session": {"is_open": True, "state": "CRYPTO_24_7"} if payload.market == "CRYPTO" else None,
+                    "session": {"is_open": True, "state": "CRYPTO_24_7"} if payload.market == "CRYPTO" else market_status,
                     "scorecard": {"total_recorded": 0, "reject_rate_pct": 0},
                 })
                 report["execution"] = {
@@ -786,6 +909,42 @@ async def scan_for_opportunities(
                                 request.app.state.risk_guardian,
                             )
                             auto_state = str(placed.get("state") or "PAPER_FILLED")
+                            # Save auto-trade execution log
+                            try:
+                                await database.add_auto_trade_execution_log(
+                                    user_id=subject,
+                                    symbol=opportunity["orderKey"],
+                                    side=opportunity["side"],
+                                    quantity=opportunity["quantity"],
+                                    entry_price=opportunity["entry"],
+                                    stop_loss=opportunity["sl"],
+                                    take_profit=opportunity["target"],
+                                    score=int(opportunity.get("fusionScore", 0)),
+                                    status=auto_state,
+                                    is_auto_trade=True,
+                                )
+                            except (RuntimeError, SQLAlchemyError) as exc:
+                                logger.warning("Failed to save auto-trade execution log: %s", type(exc).__name__)
+
+                            # Activate 100-Agent AI Swarm for this open order
+                            try:
+                                swarm = await get_ai_swarm_service(request.app)
+                                await swarm.start_swarm_for_order(
+                                    order_id=placed.get("client_order_id", auto_order.client_order_id),
+                                    symbol=opportunity["orderKey"],
+                                    side=opportunity["side"],
+                                    entry_price=opportunity["entry"],
+                                    stop_loss=opportunity["sl"],
+                                    take_profit=opportunity["target"],
+                                    trailing_sl=opportunity.get("trailingDistance", 0) or abs(opportunity["entry"] - opportunity["sl"]),
+                                    quantity=opportunity["quantity"],
+                                    exchange=opportunity["exchange"],
+                                    broker_token=opportunity.get("brokerToken", ""),
+                                    is_auto_trade=True,
+                                )
+                                logger.info("AI Swarm activated for auto-trade order %s", placed.get("client_order_id"))
+                            except Exception as swarm_exc:
+                                logger.exception("Failed to activate AI Swarm for auto-trade: %s", swarm_exc)
                         except HTTPException as exc:
                             auto_state = f"BLOCKED: {exc.detail}"
                             logger.warning(
@@ -821,6 +980,7 @@ async def scan_for_opportunities(
         "market": payload.market,
         "executionMode": "PAPER",
         "liveTradingEnabled": False,
+        "market_status": market_status,
     }
 
 
@@ -879,4 +1039,23 @@ async def claim_opportunity(
         request.app.state.risk_guardian,
         trusted_opportunity=opportunity,
     )
+    # Activate 100-Agent AI Swarm for this manual open order
+    try:
+        swarm = await get_ai_swarm_service(request.app)
+        await swarm.start_swarm_for_order(
+            order_id=result.get("client_order_id", order.client_order_id),
+            symbol=opportunity["orderKey"],
+            side=opportunity["side"],
+            entry_price=opportunity["entry"],
+            stop_loss=opportunity["sl"],
+            take_profit=opportunity["target"],
+            trailing_sl=opportunity.get("trailingDistance", 0) or abs(opportunity["entry"] - opportunity["sl"]),
+            quantity=opportunity["quantity"],
+            exchange=opportunity["exchange"],
+            broker_token=opportunity.get("brokerToken", ""),
+            is_auto_trade=False,
+        )
+        logger.info("AI Swarm activated for manual order %s", result.get("client_order_id"))
+    except Exception as swarm_exc:
+        logger.exception("Failed to activate AI Swarm for manual order: %s", swarm_exc)
     return {"success": True, "opportunity_id": opportunity_id, "order": result}

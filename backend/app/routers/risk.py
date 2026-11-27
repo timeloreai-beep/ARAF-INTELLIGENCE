@@ -55,6 +55,7 @@ async def configure_risk(
             payload.max_daily_loss_amount,
             payload.max_trades_per_day,
             payload.max_per_trade_risk_pct,
+            payload.max_weekly_loss_amount,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -114,7 +115,16 @@ async def sync_daily_pnl(
             start_at.astimezone(timezone.utc),
             end_at.astimezone(timezone.utc),
         )
-        state = guardian.sync_pnl(subject, daily_pnl_inr)
+        weekly_pnl_inr = None
+        # Calculate weekly P&L (Monday to Sunday)
+        week_start = start_at - timedelta(days=start_at.weekday())
+        week_end = week_start + timedelta(days=7)
+        weekly_pnl_inr = await database.get_daily_paper_pnl_inr(
+            subject,
+            week_start.astimezone(timezone.utc),
+            week_end.astimezone(timezone.utc),
+        )
+        state = guardian.sync_pnl(subject, daily_pnl_inr, weekly_pnl_inr)
         persistence = await persist_risk_state(request, subject, state)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail="Server-side paper P&L is unavailable") from exc

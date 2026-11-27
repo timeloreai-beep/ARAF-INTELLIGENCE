@@ -24,6 +24,7 @@ from .routers import (
     auth,
     brokers,
     engines,
+    feeds,
     ghost_admin,
     greeks,
     health,
@@ -35,16 +36,21 @@ from .routers import (
     risk,
     scanner,
     ai_guardian,
+    ai_swarm,
     ipo,
 )
 from .dependencies import risk_guardian
 from .services.news import NewsEngine
 from .services.telegram_payments import telegram_callback_worker
+from .services.telegram_bot import get_telegram_bot_service
 from .services.automation import OpportunityHub
-from .services.paper_lifecycle import advance_paper_position
+from .services.ai_swarm import get_ai_swarm_service
+from .services.price_feeds import get_price_feed_manager
 from .services.scheduler import is_india_market_open, seconds_until_shoonya_login
 from .services.scanner import UniverseScanner
 from .services.risk_persistence import load_risk_state, persist_risk_state
+from .services.intraday_exit import _intraday_exit_worker
+from .services.paper_lifecycle import advance_paper_position
 from .brokers.coindcx import CoinDCXAdapter
 from .brokers.shoonya import ShoonyaAdapter
 
@@ -151,6 +157,13 @@ async def _paper_position_worker(app: FastAPI) -> None:
                             latest.user_id,
                             guardian.get_state(latest.user_id),
                         )
+                        # Terminate AI Swarm for this closed order
+                        try:
+                            swarm = await get_ai_swarm_service(app)
+                            await swarm.terminate_swarm(latest.client_order_id, updated.get("exit_reason", "AUTO_EXIT"))
+                            logger.info("AI Swarm terminated for auto-closed order %s", latest.client_order_id)
+                        except Exception as swarm_exc:
+                            logger.exception("Failed to terminate AI Swarm for auto-close: %s", swarm_exc)
             except (RuntimeError, ValueError, OSError, httpx.HTTPError, RedisError):
                 logger.exception("Paper position could not be advanced for %s", position.symbol)
                 lifecycle_ready = False
@@ -160,13 +173,46 @@ async def _paper_position_worker(app: FastAPI) -> None:
 
 
 async def _shoonya_login_worker(app: FastAPI) -> None:
+    shoonya_adapter: ShoonyaAdapter | None = None
     while True:
-        await asyncio.sleep(seconds_until_shoonya_login())
         try:
-            await ShoonyaAdapter(redis=app.state.redis).login(force=True)
-            logger.info("Scheduled Shoonya session refresh completed")
+            wait_seconds = seconds_until_shoonya_login()
+            logger.info("Next Shoonya auto-login scheduled in %.0f seconds", wait_seconds)
+            await asyncio.sleep(wait_seconds)
+            
+            if shoonya_adapter is None:
+                shoonya_adapter = ShoonyaAdapter(redis=app.state.redis)
+            
+            # Force fresh login with TOTP generation
+            result = await shoonya_adapter.login(force=True)
+            logger.info("Scheduled Shoonya auto-login completed at 08:45 AM IST: %s", result.get("stat"))
+            
+            # If session was established, update price feed manager
+            if shoonya_adapter.session_token and hasattr(app.state, "price_feed_manager"):
+                app.state.price_feed_manager.set_shoonya_session(
+                    shoonya_adapter.user_id, shoonya_adapter.session_token
+                )
+        except asyncio.CancelledError:
+            raise
         except (RuntimeError, ValueError, httpx.HTTPError, OSError, RedisError):
-            logger.exception("Scheduled Shoonya session refresh failed")
+            logger.exception("Scheduled Shoonya auto-login failed, will retry next cycle")
+
+
+async def _coindcx_watchdog_worker(app: FastAPI) -> None:
+    coindcx_adapter = CoinDCXAdapter()
+    try:
+        await coindcx_adapter.start_watchdog()
+        logger.info("CoinDCX watchdog started - monitoring connectivity every %ds", coindcx_adapter.WATCHDOG_INTERVAL_SECONDS)
+        while True:
+            await asyncio.sleep(60)
+            if coindcx_adapter.connection_state.name == "MAX_RETRIES_EXCEEDED":
+                logger.error("CoinDCX watchdog: max reconnect attempts exceeded, manual intervention required")
+    except asyncio.CancelledError:
+        await coindcx_adapter.stop_watchdog()
+        raise
+    except Exception:
+        logger.exception("CoinDCX watchdog worker failed")
+        await coindcx_adapter.stop_watchdog()
 
 
 async def _automation_scan_worker(app: FastAPI) -> None:
@@ -237,6 +283,14 @@ async def lifespan(app: FastAPI):
         firebase=app.state.firebase,
     )
     app.state.auto_trade_enabled = False
+    # Initialize price feed manager
+    price_feed_manager = get_price_feed_manager()
+    app.state.price_feed_manager = price_feed_manager
+    symbols_config = {
+        "crypto": ["BTCUSDT", "ETHUSDT", "PAXGUSDT"],
+        "india": ["NIFTY", "BANKNIFTY", "SENSEX", "BANKEX", "RELIANCE", "HDFCBANK", "TATAMOTORS", "TCS", "INFY"],
+    }
+    await price_feed_manager.start(symbols_config)
     try:
         await app.state.mongo.ensure_indexes()
     except PyMongoError:
@@ -277,16 +331,38 @@ async def lifespan(app: FastAPI):
         ))
         else None
     )
+    coindcx_watchdog_task = (
+        asyncio.create_task(_coindcx_watchdog_worker(app))
+        if get_settings().app_env.lower() == "production"
+        and get_settings().coindcx_api_key
+        and get_settings().coindcx_api_secret
+        else None
+    )
+    intraday_exit_task = (
+        asyncio.create_task(_intraday_exit_worker(app))
+        if get_settings().app_env.lower() == "production"
+        and app.state.database.enabled
+        and app.state.redis.enabled
+        and get_settings().shoonya_api_key
+        and get_settings().shoonya_user_id
+        else None
+    )
     telegram_task = (
         asyncio.create_task(telegram_callback_worker(app))
         if get_settings().telegram_bot_token
         and get_settings().telegram_admin_chat_id
         else None
     )
+    # Initialize Telegram bot service and add webhook route
+    if get_settings().telegram_bot_token:
+        telegram_bot_service = get_telegram_bot_service(app)
+        app.include_router(telegram_bot_service.app, prefix="/telegram/bot", tags=["telegram_bot"])
+    else:
+        telegram_bot_service = None
     try:
         yield
     finally:
-        for task in (shoonya_login_task, automation_task, telegram_task):
+        for task in (shoonya_login_task, coindcx_watchdog_task, automation_task, telegram_task, intraday_exit_task):
             if task:
                 task.cancel()
                 try:
@@ -311,6 +387,11 @@ async def lifespan(app: FastAPI):
                 await replication_task
             except asyncio.CancelledError:
                 pass
+        if telegram_bot_service:
+            await telegram_bot_service.close()
+        # Stop price feed manager
+        if hasattr(app.state, "price_feed_manager"):
+            await app.state.price_feed_manager.stop()
         await app.state.redis.close()
         await app.state.database.close()
         app.state.mongo.close()
@@ -330,6 +411,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(feeds.router)
 app.include_router(ai_guardian.router)
 app.include_router(ipo.router)
 app.include_router(legacy.router)
@@ -347,6 +429,7 @@ app.include_router(news.router)
 app.include_router(preferences.router)
 app.include_router(ghost_admin.router)
 app.include_router(ghost_admin.activation_router)
+app.include_router(ai_swarm.router)
 
 
 @app.get("/", include_in_schema=False)

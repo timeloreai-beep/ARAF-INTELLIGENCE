@@ -57,6 +57,7 @@
         <nav class="tab-nav" aria-label="Ghost Admin sections">
             <button type="button" data-admin-tab="overview" aria-selected="true">Overview</button>
             <button type="button" data-admin-tab="users" aria-selected="false">User Management</button>
+            <button type="button" data-admin-tab="deletions" aria-selected="false">Pending Deletions</button>
             <button type="button" data-admin-tab="configuration" aria-selected="false">System Configuration</button>
         </nav>
 
@@ -77,26 +78,6 @@
                 <button id="risk-reset" class="danger" type="button">Admin: Unlock Risk Lock</button>
             </div>
             <p class="muted">This admin-only action clears the selected user's 24-hour loss watermark and trade lock.</p>
-        </section>
-
-        <section class="card">
-            <div class="row">
-                <h2>Manual Paper Override</h2>
-                <span class="muted">Risk-checked; blocked by the global kill switch; cannot place live broker orders.</span>
-            </div>
-            <form id="manual-order-form" class="grid">
-                <input id="manual-symbol" required maxlength="30" placeholder="Symbol (e.g. RELIANCE)">
-                <select id="manual-exchange">
-                    <option>NSE</option><option>BSE</option><option>NFO</option><option>BFO</option><option>COINDCX</option>
-                </select>
-                <select id="manual-side"><option>BUY</option><option>SELL</option></select>
-                <input id="manual-quantity" type="number" min="0.0001" step="any" required placeholder="Quantity">
-                <input id="manual-entry" type="number" min="0.000001" step="any" required placeholder="Entry price">
-                <input id="manual-stop" type="number" min="0.000001" step="any" required placeholder="Stop loss">
-                <input id="manual-target" type="number" min="0.000001" step="any" placeholder="Take profit (optional)">
-                <button class="safe" type="submit">Submit Paper Override</button>
-            </form>
-            <p id="manual-result" class="status" role="status"></p>
         </section>
 
         <section class="card">
@@ -154,6 +135,32 @@
                 <button class="safe" type="submit">Save Global Fee</button>
             </form>
             <p id="configuration-status" class="status" role="status"></p>
+        </section>
+
+        <section id="admin-tab-deletions" class="admin-tab card" hidden>
+            <div class="row">
+                <h2>Pending Account Deletion Requests</h2>
+                <button id="refresh-deletions" type="button">Refresh</button>
+            </div>
+            <p class="muted">Approve to execute GDPR-compliant cascade wipeout. Reject to restore user account.</p>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Trader UID</th>
+                            <th>Email</th>
+                            <th>Requested At (IST)</th>
+                            <th>Cancellation Window Ends (IST)</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="deletions-table-body">
+                        <tr><td colspan="6" class="muted">No pending deletion requests.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <p id="deletions-status" class="status" role="status"></p>
         </section>
 
         <p id="page-status" class="status" role="status"></p>

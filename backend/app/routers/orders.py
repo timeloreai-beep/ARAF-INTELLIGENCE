@@ -13,6 +13,7 @@ from ..config import get_settings
 from ..dependencies import current_subject, get_risk_guardian
 from ..schemas import OrderRequest
 from ..services.risk import RiskGuardian
+from ..services.cost_calculator import CostCalculator, BrokerType, SegmentType
 from ..quant.confluence import evaluate_five_layers
 from ..services.risk_persistence import (
     is_persistence_degraded,
@@ -366,6 +367,37 @@ async def _place_order_unlocked(
                     detail={"code": "DAILY_AUTO_TRADE_BUDGET_EXHAUSTED"},
                 )
         entry_price = float(payload.entry_price or 0)
+
+        bid = ask = last_price = volume_24h = avg_volume_24h = high_24h = low_24h = open_price = None
+        fx_to_inr = 1.0
+        lot_size = 1.0
+        segment = payload.exchange
+
+        try:
+            if payload.exchange == "COINDCX":
+                from ..brokers.coindcx import CoinDCXAdapter
+                quote = await CoinDCXAdapter().get_quote(payload.symbol)
+                if quote:
+                    bid = quote.bid
+                    ask = quote.ask
+                    last_price = quote.price
+                    fx_to_inr = float(opportunity.get("fxToInr") or 86)
+                    lot_size = float(opportunity.get("lotSize") or 0.001)
+            else:
+                from ..brokers.shoonya import ShoonyaAdapter
+                from ..integrations.redis import RedisCache
+                shoonya = ShoonyaAdapter(redis=request.app.state.redis)
+                if payload.broker_token:
+                    quote = await shoonya.get_quote(payload.broker_token, payload.exchange)
+                    if quote:
+                        bid = quote.bid
+                        ask = quote.ask
+                        last_price = quote.price
+                        fx_to_inr = float(opportunity.get("fxToInr") or 1)
+                        lot_size = float(opportunity.get("lotSize") or 1)
+        except Exception:
+            pass
+
         allowed, reason, state = guardian.precheck_entry(
             subject=subject,
             entry_price=entry_price,
@@ -373,6 +405,21 @@ async def _place_order_unlocked(
             quantity=float(payload.quantity),
             is_auto_trade=payload.is_auto_trade,
             side=payload.side,
+            broker=opportunity.get("broker") or ("COINDCX" if payload.exchange == "COINDCX" else "SHOONYA"),
+            symbol=payload.symbol,
+            exchange=payload.exchange,
+            bid=bid,
+            ask=ask,
+            last_price=last_price,
+            volume_24h=volume_24h,
+            avg_volume_24h=avg_volume_24h,
+            high_24h=high_24h,
+            low_24h=low_24h,
+            open_price=open_price,
+            take_profit=float(payload.take_profit),
+            fx_to_inr=fx_to_inr,
+            lot_size=lot_size,
+            segment=segment,
         )
         try:
             risk_persistence = await persist_risk_state(request, subject, state)

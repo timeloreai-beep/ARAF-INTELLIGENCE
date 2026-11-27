@@ -171,3 +171,20 @@ class FirebaseHub:
             token=token,
         )
         return await run_in_threadpool(messaging.send, message, app=self.app)
+
+    async def delete_user(self, subject: str) -> bool:
+        """Delete a Firebase Auth user by their subject (Firebase UID)."""
+        if not self.app:
+            raise RuntimeError("Firebase Admin SDK is not configured")
+        try:
+            # Try to get user by UID first
+            from starlette.concurrency import run_in_threadpool
+            await run_in_threadpool(firebase_admin.auth.delete_user, subject, app=self.app)
+            return True
+        except firebase_admin.auth.UserNotFoundError:
+            # User already deleted
+            return True
+        except Exception as e:
+            logger = __import__("logging").getLogger(__name__)
+            logger.exception("Failed to delete Firebase user %s", subject)
+            return False

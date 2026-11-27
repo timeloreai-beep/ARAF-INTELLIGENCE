@@ -72,6 +72,29 @@ class RedisCache:
     async def set_json(self, key: str, value: dict | list, ttl_seconds: int = 60) -> None:
         await self.set(key, json.dumps(value, separators=(",", ":"), allow_nan=False), ttl_seconds)
 
+    async def delete_user_sessions(self, user_id: str) -> int:
+        """Delete all Redis keys associated with a user."""
+        if not self.redis:
+            return 0
+        deleted = 0
+        patterns = [
+            f"session:{user_id}*",
+            f"auth:pin:attempts:{user_id}*",
+            f"auth:otp:{user_id}*",
+            f"auth:revoked-token:{user_id}*",
+            f"broker:session:shoonya:{user_id}*",
+            f"broker:session:coindcx:{user_id}*",
+        ]
+        for pattern in patterns:
+            cursor = 0
+            while True:
+                cursor, keys = await self.redis.scan(cursor, match=pattern, count=100)
+                if keys:
+                    deleted += await self.redis.delete(*keys)
+                if cursor == 0:
+                    break
+        return deleted
+
     async def close(self) -> None:
         if self.redis:
             await self.redis.aclose()

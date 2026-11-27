@@ -23,6 +23,8 @@ from ..models import (
     AdminControl,
     AuditEvent,
     AuthOtpChallenge,
+    AutoTradeExecutionLog,
+    BrokerVault,
     KycRecord,
     Notification,
     OrderRecord,
@@ -36,6 +38,7 @@ from ..models import (
     SubscriptionPaymentProof,
     SystemConfiguration,
     UserPreference,
+    DeletionRequest,
 )
 
 DATABASE_ERRORS = (SQLAlchemyError, OSError, TimeoutError)
@@ -100,6 +103,8 @@ class DatabaseHub:
         self.backup_engine: AsyncEngine | None = None
         self.sessions: async_sessionmaker | None = None
         self.backup_sessions: async_sessionmaker | None = None
+        self.redis: RedisManager | None = None
+        self.firebase: FirebaseManager | None = None
 
         if self.primary_url:
             self.engine = create_async_engine(
@@ -117,6 +122,12 @@ class DatabaseHub:
             self.backup_sessions = async_sessionmaker(
                 self.backup_engine, expire_on_commit=False
             )
+        # Initialize Redis if configured
+        from .redis import RedisManager
+        self.redis = RedisManager()
+        # Initialize Firebase if configured
+        from .firebase import FirebaseManager
+        self.firebase = FirebaseManager()
 
     @property
     def enabled(self) -> bool:
@@ -402,6 +413,77 @@ class DatabaseHub:
 
     async def get_kyc_record(self, user_id: str) -> KycRecord | None:
         return await self._get_one(KycRecord, KycRecord.user_id == user_id)
+
+    async def upsert_broker_vault(self, user_id: str, broker: str, encrypted_payload: str) -> PersistenceStatus:
+        from ..models import BrokerVault
+        import uuid
+        vault_id = f"{user_id}:{broker}"
+        values = {
+            "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"broker-vault:{vault_id}")),
+            "user_id": user_id,
+            "broker": broker,
+            "encrypted_payload": encrypted_payload,
+            "status": "active",
+        }
+        return await self.write_model(
+            BrokerVault(**values),
+            aggregate_type="BrokerVault",
+            aggregate_id=vault_id,
+        )
+
+    async def get_broker_vault(self, user_id: str, broker: str) -> BrokerVault | None:
+        vault_id = f"{user_id}:{broker}"
+        return await self._get_one(BrokerVault, BrokerVault.id == str(uuid.uuid5(uuid.NAMESPACE_URL, f"broker-vault:{vault_id}")))
+
+    async def delete_broker_vault(self, user_id: str, broker: str) -> PersistenceStatus:
+        status = PersistenceStatus(operation="delete_broker_vault")
+        vault_id = f"{user_id}:{broker}"
+        for name, sessions in (
+            ("primary", self.sessions),
+            ("backup", self.backup_sessions),
+        ):
+            if sessions is None:
+                status.errors[name] = "not_configured"
+                continue
+            try:
+                async with sessions() as session:
+                    vault = await session.get(BrokerVault, str(uuid.uuid5(uuid.NAMESPACE_URL, f"broker-vault:{vault_id}")))
+                    if vault:
+                        await session.delete(vault)
+                        await session.commit()
+                    if name == "primary":
+                        status.primary_applied = True
+                    else:
+                        status.backup_applied = True
+            except DATABASE_ERRORS as exc:
+                status.errors[name] = type(exc).__name__
+        status.replicated = status.primary_applied and status.backup_applied
+        status.partial_write = status.primary_applied != status.backup_applied
+        status.degraded = status.backup_applied and not status.primary_applied
+        self.last_status = status
+        return status
+
+    async def add_auto_trade_execution_log(self, **values: Any) -> PersistenceStatus:
+        return await self.write_model(
+            AutoTradeExecutionLog(**values),
+            aggregate_type="AutoTradeExecutionLog",
+            aggregate_id=str(values.get("user_id", "unknown")),
+        )
+
+    async def get_auto_trade_execution_log(self, user_id: str, limit: int = 100) -> list[AutoTradeExecutionLog]:
+        from sqlalchemy import select, desc
+        results = []
+        if self.sessions:
+            async with self.sessions() as session:
+                stmt = (
+                    select(AutoTradeExecutionLog)
+                    .where(AutoTradeExecutionLog.user_id == user_id)
+                    .order_by(desc(AutoTradeExecutionLog.created_at))
+                    .limit(limit)
+                )
+                result = await session.execute(stmt)
+                results = list(result.scalars().all())
+        return results
 
     async def upsert_quote_snapshot(self, **values: Any) -> PersistenceStatus:
         values.setdefault("id", str(uuid.uuid4()))
@@ -913,6 +995,145 @@ class DatabaseHub:
                     exc_info=exc,
                 )
         return claimed
+
+    async def upsert_deletion_request(self, **values: Any) -> PersistenceStatus:
+        return await self.write_model(
+            DeletionRequest(**values),
+            aggregate_type="DeletionRequest",
+            aggregate_id=values.get("id"),
+        )
+
+    async def get_deletion_request(self, request_id: str) -> DeletionRequest | None:
+        return await self._get_one(
+            DeletionRequest,
+            DeletionRequest.id == request_id,
+        )
+
+    async def get_deletion_request_by_user(self, user_id: str) -> DeletionRequest | None:
+        return await self._get_one(
+            DeletionRequest,
+            (DeletionRequest.user_id == user_id) & (DeletionRequest.status == "PENDING"),
+        )
+
+    async def list_pending_deletion_requests(self, limit: int = 100) -> list[DeletionRequest]:
+        results = []
+        if self.sessions is None:
+            return results
+        async with self.sessions() as session:
+            stmt = (
+                select(DeletionRequest)
+                .where(DeletionRequest.status == "PENDING")
+                .order_by(DeletionRequest.requested_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            results = list(result.scalars().all())
+        return results
+
+    async def claim_deletion_request(
+        self, request_id: str, action: str, approver_id: str
+    ) -> DeletionRequest | None:
+        claimed: DeletionRequest | None = None
+        new_status = "APPROVED" if action == "APPROVE" else "REJECTED"
+        for sessions in (self.sessions, self.backup_sessions):
+            if sessions is None:
+                continue
+            try:
+                async with sessions() as session:
+                    result = await session.execute(
+                        update(DeletionRequest)
+                        .where(
+                            DeletionRequest.id == request_id,
+                            DeletionRequest.status == "PENDING",
+                        )
+                        .values(
+                            status=new_status,
+                            approved_at=datetime.now(timezone.utc),
+                            approved_by=approver_id,
+                        )
+                    )
+                    await session.commit()
+                    if result.rowcount and claimed is None:
+                        claimed = await session.scalar(
+                            select(DeletionRequest).where(
+                                DeletionRequest.id == request_id
+                            )
+                        )
+            except DATABASE_ERRORS as exc:
+                logger = __import__("logging").getLogger(__name__)
+                logger.exception(
+                    "Could not atomically claim deletion request %s",
+                    request_id,
+                    exc_info=exc,
+                )
+        return claimed
+
+    async def execute_cascade_user_wipeout(self, user_id: str) -> PersistenceStatus:
+        """
+        Execute complete cascade wipeout of all user data.
+        Deletes from all tables in dependency order to respect FK constraints.
+        Also cleans up Redis sessions and Firebase Auth user.
+        """
+        status = PersistenceStatus(operation="cascade_user_wipeout")
+        tables_in_order = [
+            OrderRecord,
+            Position,
+            PaperPosition,
+            RiskState,
+            AuditEvent,
+            Notification,
+            KycRecord,
+            BrokerVault,
+            PinCredential,
+            UserPreference,
+            SubscriptionPaymentProof,
+            RiskConfig,
+            AppUser,
+        ]
+
+        for sessions in (self.sessions, self.backup_sessions):
+            if sessions is None:
+                continue
+            try:
+                async with sessions() as session:
+                    for table in tables_in_order:
+                        try:
+                            await session.execute(
+                                delete(table).where(table.user_id == user_id)
+                            )
+                        except Exception:
+                            pass
+                    await session.commit()
+                    if status.primary_applied is False:
+                        status.primary_applied = True
+                    else:
+                        status.backup_applied = True
+            except DATABASE_ERRORS as exc:
+                status.errors[sessions is self.sessions and "primary" or "backup"] = type(exc).__name__
+
+        # Clean up Redis sessions
+        try:
+            if self.redis and self.redis.enabled:
+                redis_deleted = await self.redis.delete_user_sessions(user_id)
+                if redis_deleted > 0:
+                    logger.info("Deleted %d Redis keys for user %s", redis_deleted, user_id)
+        except Exception as exc:
+            logger.warning("Failed to delete Redis sessions for user %s: %s", user_id, exc)
+
+        # Delete Firebase Auth user
+        try:
+            if self.firebase and self.firebase.enabled:
+                deleted = await self.firebase.delete_user(user_id)
+                if deleted:
+                    logger.info("Deleted Firebase Auth user %s", user_id)
+        except Exception as exc:
+            logger.warning("Failed to delete Firebase user %s: %s", user_id, exc)
+
+        status.replicated = status.primary_applied and status.backup_applied
+        status.partial_write = status.primary_applied != status.backup_applied
+        status.degraded = status.backup_applied and not status.primary_applied
+        self.last_status = status
+        return status
 
     async def get_order(self, user_id: str, client_order_id: str) -> OrderRecord | None:
         return await self._get_one(

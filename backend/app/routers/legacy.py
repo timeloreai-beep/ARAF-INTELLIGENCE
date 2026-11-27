@@ -29,7 +29,6 @@ LEGACY_TARGETS = frozenset({
     "fast_exit",
     "broker_positions",
     "reconcile_order",
-    "save_relay_url",
     "shoonya_auto_login",
     "get_broker_vault_status",
     "delete_broker_vault",

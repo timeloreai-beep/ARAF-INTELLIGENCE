@@ -72,13 +72,19 @@ def test_twenty_engine_suite_is_explicitly_fail_closed_without_required_inputs()
         "event_time_ms": None,
     }
     report = evaluate_engine_suite(payload)
-    assert len(report["engines"]) == len(ENGINE_METADATA) == 20
+    assert len(report["engines"]) == len(ENGINE_METADATA) == 25
     assert report["autoTradeEligible"] is False
     by_id = {engine["engineId"]: engine for engine in report["engines"]}
     assert by_id["ENG05_TAPE_READING"]["status"] == "UNAVAILABLE"
     assert by_id["ENG07_OPTIONS_FLOW"]["status"] == "NOT_APPLICABLE"
     assert by_id["ENG10_EVENT_CATALYST"]["status"] == "UNAVAILABLE"
     assert by_id["ENG20_FEED_CONSENSUS"]["status"] == "FAIL"
+    # Shikari engines
+    assert by_id["ENG21_SHIKARI_SWEEP_RECLAIM"]["status"] in {"PASS", "FAIL", "UNAVAILABLE"}
+    assert by_id["ENG22_SHIKARI_WHALE_ABSORPTION"]["status"] == "NOT_APPLICABLE"
+    assert by_id["ENG23_SHIKARI_DUMP_SHIELD"]["status"] == "NOT_APPLICABLE"
+    assert by_id["ENG24_SHIKARI_FII_DII_OI"]["status"] in {"PASS", "FAIL", "WARN", "UNAVAILABLE"}
+    assert by_id["ENG25_SHIKARI_HUNTER_UNWIND"]["status"] in {"PASS", "FAIL", "UNAVAILABLE"}
 
 
 def test_sizing_never_rounds_up_to_a_risk_exceeding_lot():

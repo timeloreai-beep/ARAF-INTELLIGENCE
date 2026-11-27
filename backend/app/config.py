@@ -1,5 +1,4 @@
 from functools import lru_cache
-import warnings
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -51,6 +50,7 @@ class Settings(BaseSettings):
     admin_name: str = ""
     telegram_bot_token: str = ""
     telegram_admin_chat_id: str = ""
+    telegram_admin_channel_id: str = ""
     newsapi_api_key: str = ""
     finnhub_api_key: str = ""
     alpha_vantage_api_key: str = ""
@@ -76,17 +76,6 @@ class Settings(BaseSettings):
     background_scan_interval_seconds: int = Field(default=60, ge=15, le=900)
     shoonya_daily_login_enabled: bool = True
     india_market_holidays: str = ""
-
-    @model_validator(mode="after")
-    def enforce_paper_only(self) -> "Settings":
-        if self.live_trading_enabled:
-            warnings.warn(
-                "LIVE_TRADING_ENABLED=true is ignored; this backend build is paper-only",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            self.live_trading_enabled = False
-        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

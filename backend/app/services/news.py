@@ -122,6 +122,11 @@ def normalize_news_item(
     published = _parse_published_at(published_at)
     matches = priority_matches(f"{clean_title} {_clean_text(description)}")
     event_id = hashlib.sha256(f"{source}\n{clean_url}".encode()).hexdigest()
+    
+    # Breaking news: high priority + recent (< 30 min)
+    now = datetime.now(timezone.utc)
+    is_breaking = bool(matches) and (now - published) < timedelta(minutes=30)
+    
     return {
         "id": event_id,
         "title": clean_title,
@@ -134,6 +139,7 @@ def normalize_news_item(
         "eventCategory": "MACRO" if matches else "MARKET",
         "priority": bool(matches),
         "priorityReasons": list(matches),
+        "breaking": is_breaking,
     }
 
 
@@ -489,14 +495,22 @@ class NewsEngine:
         return result
 
     async def _gemini_translate_async(self, text: str, target_lang: str) -> str:
-        """Translate text using Gemini Flash API (async)."""
-        if not self.settings.gemini_api_key or target_lang == "en":
+        """Translate text using Gemini Flash API (async). English → target language."""
+        if not self.settings.gemini_api_key or target_lang in ("en", "en-US"):
             return text
         try:
-            endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+            endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
             api_key = self.settings.gemini_api_key
+            lang_names = {
+                "bn": "Bengali (পাকা ও শুদ্ধ বাংলা)",
+                "hi": "Hindi (शुद्ध हिंदी)",
+                "gu": "Gujarati (શુદ્ધ ગુજરાતી)",
+                "mr": "Marathi (शुद्ध मराठी)",
+                "ta": "Tamil (தென்தமிழ்)",
+            }
+            lang_name = lang_names.get(target_lang, target_lang)
             payload = {
-                "contents": [{"role": "user", "parts": [{"text": f"Translate this natural Bengali text into fluent, mature, natural Bengali (পাকা ও শুদ্ধ Bengali). Preserve the original meaning and tone. Do not add any commentary, explanations, or English phrases. Just return the translated text only.\n\nText: {text}"}]}],
+                "contents": [{"role": "user", "parts": [{"text": f"Translate this English financial news into fluent, mature, natural {lang_name}. Preserve financial terminology, numbers, and proper nouns. Do not add any commentary, explanations, or English phrases. Return only the translation.\n\nText: {text}"}]}],
             }
             headers = {"Content-Type": "application/json"}
             url = f"{endpoint}?key={api_key}"
@@ -515,10 +529,11 @@ class NewsEngine:
                 translated = parts[0].get("text", "").strip()
                 if not translated:
                     return text
-                # Ensure it's Bengali script, fallback to original if mostly English
-                bangla_chars = sum(1 for c in translated if '\u0980' <= c <= '\u09FF' or c in '\u00A1\u00BF')
-                if bangla_chars < len(translated) * 0.3:
-                    return text
+                # Verify script matches target language
+                if target_lang == "bn":
+                    bn_chars = sum(1 for c in translated if '\u0980' <= c <= '\u09FF')
+                    if bn_chars < len(translated) * 0.3:
+                        return text
                 return translated
         except Exception:
             return text
@@ -604,9 +619,17 @@ class NewsEngine:
             while len(self._known_order) > 20000:
                 self._known_ids.discard(self._known_order.popleft())
 
+            # Generate summaries with market impact for fresh items
+            for item in fresh_items:
+                item["summary"] = self._generate_summary_with_impact(item)
+            
+            # Translate fresh items to all supported languages
+            if self.settings.gemini_api_key:
+                await self._translate_fresh_items(fresh_items)
+
             self._latest = sorted(
                 [*fresh_items, *self._latest],
-                key=lambda item: item["pubDate"],
+                key=lambda item: (not item.get("breaking", False), item["pubDate"]),
                 reverse=True,
             )[:300]
             self._last_poll_at = datetime.now(timezone.utc).isoformat()
@@ -738,43 +761,8 @@ class NewsEngine:
                 except (FirebaseError, GoogleAPIError, RuntimeError):
                     logger.exception("Could not publish a priority news event to Firebase")
 
-    async def _gemini_translate(self, text: str, target_lang: str) -> str:
-        """Translate text using Gemini Flash API."""
-        if not self.settings.gemini_api_key or target_lang == "en":
-            return text
-        try:
-            endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-            api_key = self.settings.gemini_api_key
-            payload = {
-                "contents": [{"role": "user", "parts": [{"text": f"Translate this natural Bengali text into fluent, mature, natural Bengali (পাকা ও শুদ্ধ Bengali). Preserve the original meaning and tone. Do not add any commentary, explanations, or English phrases. Just return the translated text only.\n\nText: {text}"}]}],
-            }
-            headers = {"Content-Type": "application/json"}
-            url = f"{endpoint}?key={api_key}"
-            async with _httpx_client.AsyncClient() as client:
-                resp = await client.post(url, json=payload, headers=headers, timeout=15)
-                if resp.status_code != 200:
-                    return text
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if not candidates:
-                    return text
-                content = candidates[0].get("content", "")
-                parts = content.get("parts", [])
-                if not parts:
-                    return text
-                translated = parts[0].get("text", "").strip()
-                if not translated:
-                    return text
-                # Ensure it's Bengali script, fallback to original if mostly English
-                bangla_chars = sum(1 for c in translated if '\u0980' <= c <= '\u09FF' or c in '\u00A1\u00BF')
-                if bangla_chars < len(translated) * 0.3:
-                    return text
-                return translated
-        except Exception:
-            return text
-
     def _generate_summary_with_impact(self, item: dict[str, Any]) -> str:
-        """Generate a full readable summary with market impact (bullish/bearish reason)."""
+        """Generate a full readable summary with market impact (bullish/bearish reason) using LLM."""
         title = item.get("title", "") or ""
         description = item.get("description", "") or ""
         category = item.get("eventCategory", "MARKET") or "MARKET"
@@ -786,13 +774,17 @@ class NewsEngine:
         if not clean_title:
             return "No summary available."
 
-        # Build summary based on available data
-        summary_parts = [clean_title]
+        # Build context-aware summary with LLM if available
+        if self.settings.gemini_api_key:
+            llm_summary = self._llm_generate_impact(clean_title, clean_desc, category, reasons)
+            if llm_summary:
+                return llm_summary
 
+        # Fallback: keyword-based (existing logic)
+        summary_parts = [clean_title]
         if clean_desc:
             summary_parts.append(clean_desc)
 
-        # Add market impact interpretation
         impact_parts = []
         if "FII" in reasons or "DII" in reasons:
             impact_parts.append(" institutional flow activity")
@@ -808,9 +800,9 @@ class NewsEngine:
         if impact_parts:
             summary_parts.append("Market impact:" + "".join(impact_parts))
 
-        # Add bullish/bearish inference
-        bullish_keywords = ["rise", "gain", "up", "increase", "positive", "bull", "upgrade"]
-        bearish_keywords = ["fall", "drop", "down", "decrease", "negative", "bear", "downgrade"]
+        # Keyword-based bullish/bearish fallback
+        bullish_keywords = ["rise", "gain", "up", "increase", "positive", "bull", "upgrade", "surge", "rally", "boost"]
+        bearish_keywords = ["fall", "drop", "down", "decrease", "negative", "bear", "downgrade", "crash", "slump", "decline"]
         low_title = clean_title.lower()
         low_desc = clean_desc.lower()
 
@@ -831,4 +823,84 @@ class NewsEngine:
 
         summary = ". ".join(summary_parts)
         return summary if summary else clean_title
+
+    def _llm_generate_impact(self, title: str, description: str, category: str, reasons: list) -> str | None:
+        """Generate market impact summary using Gemini LLM."""
+        try:
+            endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
+            api_key = self.settings.gemini_api_key
+            prompt = f"""Analyze this financial news for Indian market impact. Provide a concise 3-line response:
+
+NEWS: {title}. {description}
+CATEGORY: {category}
+PRIORITY SIGNALS: {', '.join(reasons) if reasons else 'None'}
+
+FORMAT (exactly 3 lines):
+1. SUMMARY: One-sentence summary of the news.
+2. IMPACT: BULLISH | BEARISH | NEUTRAL | MIXED
+3. REASON: One-line specific reason (e.g., "FII inflows boost liquidity", "Crude spike hurts importers", "Rate hike fears pressure banks").
+
+No extra text, no formatting, no markdown."""
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            }
+            headers = {"Content-Type": "application/json"}
+            url = f"{endpoint}?key={api_key}"
+            # Use synchronous call for simplicity in this method
+            import httpx
+            with httpx.Client() as client:
+                resp = client.post(url, json=payload, headers=headers, timeout=10)
+                if resp.status_code != 200:
+                    return None
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return None
+                content = candidates[0].get("content", "")
+                parts = content.get("parts", [])
+                if not parts:
+                    return None
+                llm_response = parts[0].get("text", "").strip()
+                if not llm_response:
+                    return None
+                # Parse the 3-line response
+                lines = [ln.strip() for ln in llm_response.split("\n") if ln.strip()]
+                if len(lines) >= 3:
+                    summary_line = lines[0].replace("SUMMARY:", "").strip()
+                    impact_line = lines[1].replace("IMPACT:", "").strip()
+                    reason_line = lines[2].replace("REASON:", "").strip()
+                    return f"{summary_line}. Impact: {impact_line}. Reason: {reason_line}."
+        except Exception:
+            return None
+
+    async def _translate_fresh_items(self, items: list[dict[str, Any]]) -> None:
+        """Translate fresh items' titles, descriptions, and summaries to supported languages."""
+        if not self.settings.gemini_api_key:
+            return
+        target_langs = ["bn", "hi", "gu", "mr", "ta"]
+        for item in items:
+            title = item.get("title", "")
+            description = item.get("description", "")
+            summary = item.get("summary", "")
+            if not title:
+                continue
+            for lang in target_langs:
+                try:
+                    # Translate title
+                    translated_title = await self._gemini_translate_async(title, lang)
+                    if translated_title and translated_title != title:
+                        item[f"title_{lang}"] = translated_title
+                    # Translate description
+                    if description:
+                        translated_desc = await self._gemini_translate_async(description, lang)
+                        if translated_desc and translated_desc != description:
+                            item[f"description_{lang}"] = translated_desc
+                    # Translate summary
+                    if summary:
+                        translated_summary = await self._gemini_translate_async(summary, lang)
+                        if translated_summary and translated_summary != summary:
+                            item[f"summary_{lang}"] = translated_summary
+                except Exception:
+                    # Continue with other languages/items on failure
+                    continue
 

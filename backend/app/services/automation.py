@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .cost_calculator import CostCalculator, BrokerType, SegmentType, CostBreakdown
+
 
 OPPORTUNITY_TTL_SECONDS = 15
 
@@ -93,7 +95,8 @@ class OpportunityHub:
     async def get_settings(self, subject: str) -> dict[str, Any]:
         async with self._lock:
             return dict(self._settings.get(subject, {
-                "enabled": False,
+                "crypto_enabled": False,
+                "india_enabled": False,
                 "dailyBudgetInr": 10000,
                 "allowedMarkets": "ALL",
             }))
@@ -178,17 +181,75 @@ class OpportunityHub:
             execution_eligible
             and score >= 90
             and report.get("autoTradeEligible") is True
-            and settings["enabled"]
+            and (settings["crypto_enabled"] if market == "CRYPTO" else settings["india_enabled"])
             and global_auto_trade_enabled
             and not global_kill_switch
             and lifecycle_ready
         )
+
+        # Cost guard - only apply if we have broker/exchange info
+        broker = report.get("broker") or ("COINDCX" if market == "CRYPTO" else "SHOONYA")
+        exchange = report.get("exchange") or ("COINDCX" if market == "CRYPTO" else "NFO")
+        has_broker_info = bool(report.get("broker") and report.get("exchange"))
+
+        if has_broker_info:
+            segment = "CRYPTO_FUTURES" if market == "CRYPTO" else "FUTURES"
+
+            if broker == "COINDCX":
+                cost_breakdown = CostCalculator.calculate_coindcx_costs(
+                    side=side,
+                    entry_price=plan["entry"],
+                    stop_loss=plan["stop_loss"],
+                    take_profit=plan["take_profit"],
+                    quantity=plan["quantity"],
+                    fx_to_inr=fx_to_inr,
+                )
+            else:
+                cost_breakdown = CostCalculator.calculate_shoonya_costs(
+                    side=side,
+                    entry_price=plan["entry"],
+                    stop_loss=plan["stop_loss"],
+                    take_profit=plan["take_profit"],
+                    quantity=plan["quantity"],
+                    lot_size=int(lot_size) if lot_size > 0 else 1,
+                    segment=SegmentType.FUTURES,
+                )
+
+            net_profit_after_costs = cost_breakdown.net_reward
+            net_rr_after_costs = cost_breakdown.net_rr_ratio
+            is_net_viable = cost_breakdown.is_viable
+            cost_veto_reason = cost_breakdown.veto_reason
+        else:
+            # No broker info - skip cost guard, assume viable
+            net_profit_after_costs = plan["risk_inr"] * plan.get("rrRatio", 2)
+            net_rr_after_costs = plan.get("rrRatio", 2)
+            is_net_viable = True
+            cost_veto_reason = None
+            # Create dummy cost breakdown for opportunity fields
+            cost_breakdown = CostBreakdown(
+                gross_reward=net_profit_after_costs,
+                gross_risk=plan["risk_inr"],
+                brokerage=0,
+                stt=0,
+                exchange_txn=0,
+                gst=0,
+                stamp_duty=0,
+                tds=0,
+                slippage_buffer=0,
+                total_costs=0,
+                net_reward=net_profit_after_costs,
+                net_risk=plan["risk_inr"],
+                net_rr_ratio=net_rr_after_costs,
+                is_viable=True,
+                veto_reason=None,
+            )
+
         opportunity = {
             "id": str(uuid.uuid4()),
             "subject": subject,
             "symbol": report.get("symbol"),
             "orderKey": report.get("orderKey"),
-            "exchange": report.get("exchange"),
+            "exchange": exchange,
             "brokerToken": report.get("brokerToken"),
             "category": report.get("category"),
             "side": side,
@@ -218,11 +279,26 @@ class OpportunityHub:
                 / abs(plan["entry"] - plan["stop_loss"]),
                 2,
             ),
+            "netProfitAfterCosts": round(net_profit_after_costs, 2),
+            "netRrAfterCosts": net_rr_after_costs,
+            "isNetViable": is_net_viable,
+            "costVetoReason": cost_veto_reason,
+            "grossReward": round(cost_breakdown.gross_reward, 2),
+            "totalEstCosts": round(cost_breakdown.total_costs, 2),
+            "costBreakdown": {
+                "brokerage": round(cost_breakdown.brokerage, 2),
+                "stt": round(cost_breakdown.stt, 2),
+                "exchangeTxn": round(cost_breakdown.exchange_txn, 2),
+                "gst": round(cost_breakdown.gst, 2),
+                "stampDuty": round(cost_breakdown.stamp_duty, 2),
+                "tds": round(cost_breakdown.tds, 2),
+                "slippageBuffer": round(cost_breakdown.slippage_buffer, 2),
+            },
             "bengaliReason": _bengali_reason(report),
             "createdAt": current.isoformat(),
             "expiresAt": expires_at.isoformat(),
             "autoTradeEligible": is_auto_eligible,
-            "executionEligible": execution_eligible,
+            "executionEligible": execution_eligible and is_net_viable,
             "serverGatesPassed": True,
             "mode": "PAPER",
         }

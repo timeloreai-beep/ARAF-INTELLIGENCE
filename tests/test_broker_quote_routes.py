@@ -105,10 +105,10 @@ def test_quote_endpoints_reject_unauthenticated_requests():
     assert response.status_code == 401
 
 
-def test_live_trading_setting_is_locked_off():
+def test_live_trading_setting_defaults_to_false_but_can_be_enabled():
     settings = Settings(_env_file=None)
     assert settings.live_trading_enabled is False
-    assert Settings(_env_file=None, live_trading_enabled=True).live_trading_enabled is False
+    assert Settings(_env_file=None, live_trading_enabled=True).live_trading_enabled is True
 
 
 def test_paper_entry_fails_closed_without_position_persistence():

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from firebase_admin.exceptions import FirebaseError
 from google.api_core.exceptions import GoogleAPIError
+from pydantic import BaseModel, Field
 from pymongo.errors import PyMongoError
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
@@ -28,8 +29,12 @@ from ..schemas import (
     GhostSystemConfigurationUpdate,
     GhostUserAccessUpdate,
     GhostUserVipUpdate,
+    GhostDeletionRequestList,
+    GhostDeletionRequestItem,
+    GhostDeletionApproveRequest,
 )
 from ..security import create_ghost_admin_token
+from ..services.telegram_payments import send_payment_proof
 from ..services.risk import RiskGuardian
 from ..services.risk_persistence import load_risk_state, persist_risk_state
 
@@ -114,7 +119,7 @@ async def get_control(
             "max_per_trade_risk_pct": settings.max_per_trade_risk_pct,
             "max_daily_loss_amount": settings.max_daily_loss_amount,
         },
-        "live_trading_enabled": False,
+        "live_trading_enabled": settings.live_trading_enabled,
     }
 
 
@@ -678,7 +683,7 @@ async def update_control(
         "global_kill_switch": bool(current and current.global_kill_switch),
         "persistence": status_report.as_dict(),
         "audit": audit_status,
-        "live_trading_enabled": False,
+        "live_trading_enabled": settings.live_trading_enabled,
     }
 
 
@@ -812,5 +817,110 @@ async def integration_health(
         "checked_at": datetime.now(timezone.utc),
         "services": services,
         "news_providers": news["providers"],
-        "live_trading_enabled": False,
+        "live_trading_enabled": settings.live_trading_enabled,
     }
+
+
+# =====================================================================
+# Account Deletion Endpoints (Module 9 - GDPR Compliant)
+# =====================================================================
+
+class GhostDeletionApproveRequest(BaseModel):
+    action: str = Field(pattern="^(APPROVE|REJECT)$")
+
+
+@router.get("/account-deletion/pending", response_model=GhostDeletionRequestList)
+async def list_pending_deletion_requests(
+    request: Request,
+    _admin: str = Depends(require_ghost_admin),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> GhostDeletionRequestList:
+    """List all pending account deletion requests."""
+    database = request.app.state.database
+    requests = await database.list_pending_deletion_requests(limit=limit)
+    
+    items = []
+    for req in requests:
+        user = await request.app.state.database.get_app_user(req.user_id)
+        items.append(GhostDeletionRequestItem(
+            request_id=req.id,
+            user_id=req.user_id,
+            email=user.email if user else None,
+            trader_uid=user.trader_uid if user else None,
+            status=req.status,
+            requested_at=req.requested_at.isoformat(),
+            cancellation_window_ends_at=req.cancellation_window_ends_at.isoformat() if req.cancellation_window_ends_at else None,
+        ))
+    
+    return GhostDeletionRequestList(items=items, total=len(items))
+
+
+@router.post("/account-deletion/{request_id}/approve", response_model=dict)
+async def approve_deletion_request(
+    request_id: str,
+    payload: GhostDeletionApproveRequest,
+    request: Request,
+    _admin: str = Depends(require_ghost_admin),
+) -> dict:
+    """Approve or reject a pending account deletion request."""
+    database = request.app.state.database
+    
+    action = payload.action.upper()
+    if action not in ("APPROVE", "REJECT"):
+        raise HTTPException(status_code=400, detail="Action must be APPROVE or REJECT")
+    
+    # Get the deletion request
+    req = await database.get_deletion_request(request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Deletion request not found")
+    
+    if req.status != "PENDING":
+        raise HTTPException(status_code=409, detail=f"Request already {req.status}")
+    
+    if payload.action == "APPROVE":
+        # Execute cascade wipeout
+        status = await request.app.state.database.execute_cascade_user_wipeout(req.user_id)
+        
+        # Update deletion request status
+        await database.claim_deletion_request(
+            request_id=request_id,
+            action="APPROVE",
+            approver_id="ghost-admin",
+        )
+        
+        # Update user status to DELETED
+        await request.app.state.database.upsert_app_user(
+            external_subject=req.user_id,
+            provider="firebase",
+            email="",
+            deletion_status="DELETED",
+            deletion_approved_at=datetime.now(timezone.utc),
+            deletion_approved_by="ghost-admin",
+        )
+        
+        return {
+            "success": True,
+            "message": f"Account deletion approved and executed. Wipeout status: {status.health}",
+            "wipeout_status": status.as_dict(),
+        }
+    else:
+        # Reject the deletion request
+        await database.claim_deletion_request(
+            request_id=request_id,
+            action="REJECT",
+            approver_id="ghost-admin",
+        )
+        
+        # Restore user status to ACTIVE
+        await request.app.state.database.upsert_app_user(
+            external_subject=req.user_id,
+            provider="firebase",
+            email="",
+            deletion_status="ACTIVE",
+            deletion_requested_at=None,
+        )
+        
+        return {
+            "success": True,
+            "message": "Deletion request rejected. User account restored to active.",
+        }

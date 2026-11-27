@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 import httpx
 import qrcode
 from qrcode.image.svg import SvgPathImage
+from pydantic import BaseModel, Field
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, UploadFile, File, Form, Query
 from redis.exceptions import RedisError
@@ -658,6 +659,8 @@ async def create_subscription_upi_intent(
         "months": months,
         "intent_uri": intent_uri,
         "qr_svg": qr_svg,
+        "upi_id": upi_id,
+        "merchant_name": merchant_name,
     }
 
 
@@ -667,6 +670,7 @@ async def submit_subscription_payment_proof(
     subject: str = Depends(current_subject),
     months: int = Form(ge=1, le=12),
     proof: UploadFile = File(...),
+    utr: str | None = Form(default=None, max_length=64, pattern=r"^[A-Za-z0-9]{10,64}$"),
 ) -> dict[str, Any]:
     if proof.content_type not in {"image/jpeg", "image/png", "image/webp"}:
         raise HTTPException(status_code=415, detail="Payment proof must be JPEG, PNG, or WebP")
@@ -703,6 +707,7 @@ async def submit_subscription_payment_proof(
             email=email,
             months=months,
             amount_inr=monthly_amount * months,
+            utr=utr,
             proof_sha256=proof_sha256,
             status="PENDING",
             telegram_message_id=None,
@@ -724,6 +729,7 @@ async def submit_subscription_payment_proof(
             filename=proof.filename or "payment-proof.jpg",
             amount_inr=monthly_amount * months,
             payment_id=payment_id,
+            utr=utr,
         )
     except (RuntimeError, httpx.HTTPError) as exc:
         logger.exception("Could not relay subscription payment proof")
@@ -766,7 +772,7 @@ async def save_master_user(
     preferences = full_data.get("preferences", {})
     if not isinstance(preferences, dict):
         raise HTTPException(status_code=422, detail="preferences must be an object")
-    allowed = {"voiceLang", "newsLang", "aiChatLang", "customRelayUrl"}
+    allowed = {"voiceLang", "newsLang", "aiChatLang"}
     safe_preferences = {
         key: str(value)[:255]
         for key, value in preferences.items()
@@ -867,3 +873,157 @@ async def sync_authenticated_session(
         "persistence": persistence,
         "persistence_degraded": degraded,
     }
+
+
+# =====================================================================
+# Account Deletion Endpoints (Module 9 - GDPR Compliant)
+# =====================================================================
+
+class AccountDeletionRequest(BaseModel):
+    pass
+
+
+class AccountDeletionCancelRequest(BaseModel):
+    pass
+
+
+class AccountDeletionStatusResponse(BaseModel):
+    deletion_status: str
+    deletion_requested_at: str | None = None
+    cancellation_window_ends_at: str | None = None
+    can_cancel: bool = False
+
+
+@router.post("/account-deletion/request", response_model=dict)
+async def request_account_deletion(
+    request: Request,
+    body: AccountDeletionRequest,
+    subject: str = Depends(current_subject),
+) -> dict[str, Any]:
+    """Request permanent account deletion with 15-second cancellation window."""
+    database = _require_database(request)
+    
+    # Check if user already has a pending deletion request
+    existing = await database.get_deletion_request_by_user(subject)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deletion request already pending. Expires at {existing.cancellation_window_ends_at.isoformat() if existing.cancellation_window_ends_at else 'unknown'}",
+        )
+    
+    # Check if user is already in deletion process
+    user = await database.get_app_user(subject)
+    if user and user.deletion_status != "ACTIVE":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Account already in deletion process: {user.deletion_status}",
+        )
+    
+    # Create deletion request with 15-second cancellation window
+    from datetime import datetime, timedelta, timezone
+    request_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    cancellation_ends = now + timedelta(seconds=15)
+    
+    status = await database.upsert_deletion_request(
+        id=request_id,
+        user_id=subject,
+        status="PENDING",
+        requested_at=now,
+        cancellation_window_ends_at=cancellation_ends,
+    )
+    
+    if not (status.primary_applied or status.backup_applied):
+        raise HTTPException(status_code=503, detail="Could not create deletion request")
+    
+    # Update user deletion status
+    await _db_call(
+        database.upsert_app_user(
+            external_subject=subject,
+            provider="firebase",
+            email="",
+            deletion_status="DELETION_PENDING",
+            deletion_requested_at=now,
+        ),
+        "Could not update user deletion status",
+    )
+    
+    return {
+        "success": True,
+        "request_id": request_id,
+        "cancellation_window_ends_at": cancellation_ends.isoformat(),
+        "message": "Deletion requested. You have 15 seconds to cancel.",
+    }
+
+
+@router.get("/account-deletion/status", response_model=AccountDeletionStatusResponse)
+async def get_account_deletion_status(
+    request: Request,
+    subject: str = Depends(current_subject),
+) -> AccountDeletionStatusResponse:
+    """Get current account deletion status for the authenticated user."""
+    database = request.app.state.database
+    
+    deletion_req = await database.get_deletion_request_by_user(subject)
+    user = await database.get_app_user(subject)
+    
+    if not deletion_req:
+        return AccountDeletionStatusResponse(
+            deletion_status=user.deletion_status if user else "ACTIVE",
+            deletion_requested_at=user.deletion_requested_at.isoformat() if user and user.deletion_requested_at else None,
+            can_cancel=False,
+        )
+    
+    now = datetime.now(timezone.utc)
+    can_cancel = deletion_req.cancellation_window_ends_at and deletion_req.cancellation_window_ends_at > datetime.now(timezone.utc)
+    
+    return AccountDeletionStatusResponse(
+        deletion_status="DELETION_PENDING",
+        deletion_requested_at=deletion_req.requested_at.isoformat(),
+        cancellation_window_ends_at=deletion_req.cancellation_window_ends_at.isoformat() if deletion_req.cancellation_window_ends_at else None,
+        can_cancel=can_cancel,
+    )
+
+
+@router.post("/account-deletion/cancel", response_model=dict)
+async def cancel_account_deletion(
+    request: Request,
+    body: AccountDeletionCancelRequest,
+    subject: str = Depends(current_subject),
+) -> dict[str, Any]:
+    """Cancel a pending account deletion request (only within 15-second window)."""
+    database = request.app.state.database
+    
+    deletion_req = await database.get_deletion_request_by_user(subject)
+    if not deletion_req:
+        raise HTTPException(status_code=404, detail="No pending deletion request found")
+    
+    if deletion_req.cancellation_window_ends_at <= datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=400,
+            detail="Cancellation window has expired. Contact support or wait for admin review.",
+        )
+    
+    # Cancel the deletion request
+    status = await database.claim_deletion_request(
+        request_id=deletion_req.id,
+        action="REJECT",  # Using REJECT to cancel
+        approver_id=subject,  # Self-cancel
+    )
+    
+    if not status:
+        raise HTTPException(status_code=503, detail="Could not cancel deletion request")
+    
+    # Restore user status
+    await _db_call(
+        database.upsert_app_user(
+            external_subject=subject,
+            provider="firebase",
+            email="",
+            deletion_status="ACTIVE",
+            deletion_requested_at=None,
+        ),
+        "Could not restore user status",
+    )
+    
+    return {"success": True, "message": "Account deletion cancelled successfully"}

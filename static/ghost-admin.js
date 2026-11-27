@@ -9,6 +9,7 @@
     const healthEl = document.getElementById("health-feed");
     const scannerEl = document.getElementById("scanner-feed");
     const usersBody = document.getElementById("users-table-body");
+    const deletionsBody = document.getElementById("deletions-table-body");
     let token = sessionStorage.getItem(tokenKey) || "";
 
     function showStatus(message, element = statusEl) {
@@ -259,6 +260,87 @@
         });
     }
 
+    async function loadDeletions() {
+        deletionsBody.replaceChildren();
+        const loadingRow = document.createElement("tr");
+        const loadingCell = document.createElement("td");
+        loadingCell.colSpan = 6;
+        loadingCell.textContent = "Loading deletion requests…";
+        loadingRow.append(loadingCell);
+        deletionsBody.append(loadingRow);
+        const data = await api("/admin/ghost/account-deletion/pending?limit=100");
+        deletionsBody.replaceChildren();
+        if (!data.items.length) {
+            const emptyRow = document.createElement("tr");
+            const emptyCell = document.createElement("td");
+            emptyCell.colSpan = 6;
+            emptyCell.textContent = "No pending deletion requests.";
+            emptyRow.append(emptyCell);
+            deletionsBody.append(emptyRow);
+            return;
+        }
+        const istFormatter = new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" });
+        data.items.forEach(req => {
+            const row = document.createElement("tr");
+            [
+                req.trader_uid || "—",
+                req.email || "—",
+                req.requested_at ? istFormatter.format(new Date(req.requested_at)) : "—",
+                req.cancellation_window_ends_at ? istFormatter.format(new Date(req.cancellation_window_ends_at)) : "—",
+                req.status
+            ].forEach(value => {
+                const cell = document.createElement("td");
+                cell.textContent = value || "—";
+                row.append(cell);
+            });
+
+            const actionsCell = document.createElement("td");
+            const actions = document.createElement("div");
+            actions.className = "user-actions";
+
+            const approve = document.createElement("button");
+            approve.type = "button";
+            approve.className = "danger";
+            approve.textContent = "Approve Destruction";
+            approve.addEventListener("click", async () => {
+                if (!window.confirm(`APPROVE permanent deletion for ${req.trader_uid || req.user_id}? This executes cascade wipeout (Postgres, Redis, Firebase). IRREVERSIBLE.`)) return;
+                try {
+                    const result = await api(`/admin/ghost/account-deletion/${req.request_id}/approve`, {
+                        method: "POST",
+                        body: { action: "APPROVE" }
+                    });
+                    showStatus(`Deletion APPROVED: ${result.message}`, document.getElementById("deletions-status"));
+                    await loadDeletions();
+                } catch (error) {
+                    showStatus(error.message, document.getElementById("deletions-status"));
+                }
+            });
+
+            const reject = document.createElement("button");
+            reject.type = "button";
+            reject.className = "safe";
+            reject.textContent = "Reject / Restore";
+            reject.addEventListener("click", async () => {
+                if (!window.confirm(`REJECT deletion request for ${req.trader_uid || req.user_id}? User account will be restored to ACTIVE.`)) return;
+                try {
+                    const result = await api(`/admin/ghost/account-deletion/${req.request_id}/approve`, {
+                        method: "POST",
+                        body: { action: "REJECT" }
+                    });
+                    showStatus(`Deletion REJECTED: ${result.message}`, document.getElementById("deletions-status"));
+                    await loadDeletions();
+                } catch (error) {
+                    showStatus(error.message, document.getElementById("deletions-status"));
+                }
+            });
+
+            actions.append(approve, reject);
+            actionsCell.append(actions);
+            row.append(actionsCell);
+            deletionsBody.append(row);
+        });
+    }
+
     async function updateUser(user, route, body, successMessage) {
         try {
             await api(`/admin/ghost/users/${encodeURIComponent(user.user_id)}${route}`, {
@@ -311,7 +393,7 @@
             sessionStorage.setItem(tokenTtlKey, String(Date.now() + data.expires_in * 1000));
             passwordInput.value = "";
             showAuthenticated(true);
-            await Promise.all([loadControl(), loadHealth(), loadScanner(), loadUsers(), loadConfiguration()]);
+            await Promise.all([loadControl(), loadHealth(), loadScanner(), loadUsers(), loadDeletions(), loadConfiguration()]);
         } catch (error) {
             passwordInput.value = "";
             showStatus(error.message);
@@ -332,6 +414,7 @@
     document.getElementById("refresh-health").addEventListener("click", () => loadHealth().catch(error => showStatus(error.message)));
     document.getElementById("refresh-scanner").addEventListener("click", () => loadScanner().catch(error => showStatus(error.message)));
     document.getElementById("refresh-users").addEventListener("click", () => loadUsers().catch(error => showStatus(error.message, document.getElementById("users-status"))));
+    document.getElementById("refresh-deletions").addEventListener("click", () => loadDeletions().catch(error => showStatus(error.message, document.getElementById("deletions-status"))));
     document.getElementById("scan-now").addEventListener("click", async () => {
         try {
             showStatus("Running the configured India universe scan…");
@@ -345,37 +428,10 @@
             showStatus(error.message);
         }
     });
-    document.getElementById("manual-order-form").addEventListener("submit", async event => {
-        event.preventDefault();
-        try {
-            const symbol = document.getElementById("manual-symbol").value.trim().toUpperCase();
-            const side = document.getElementById("manual-side").value;
-            const result = await api("/orders/place", {
-                method: "POST",
-                body: {
-                    symbol,
-                    exchange: document.getElementById("manual-exchange").value,
-                    side,
-                    quantity: Number(document.getElementById("manual-quantity").value),
-                    entry_price: Number(document.getElementById("manual-entry").value),
-                    stop_loss: Number(document.getElementById("manual-stop").value),
-                    take_profit: Number(document.getElementById("manual-target").value) || null,
-                    operation: "ENTRY",
-                    mode: "PAPER",
-                    is_auto_trade: false,
-                    client_order_id: `GHOST_${Date.now()}_${crypto.getRandomValues(new Uint32Array(1))[0]}`
-                }
-            });
-            showStatus(`Paper order ${result.state}: ${result.symbol || symbol} ${side}; risk checks passed.`, document.getElementById("manual-result"));
-            await loadControl();
-        } catch (error) {
-            showStatus(error.message, document.getElementById("manual-result"));
-        }
-    });
 
     if (token && Number(sessionStorage.getItem(tokenTtlKey) || 0) > Date.now()) {
         showAuthenticated(true);
-        Promise.all([loadControl(), loadHealth(), loadScanner(), loadUsers(), loadConfiguration()]).catch(error => showStatus(error.message));
+        Promise.all([loadControl(), loadHealth(), loadScanner(), loadUsers(), loadDeletions(), loadConfiguration()]).catch(error => showStatus(error.message));
         window.setInterval(() => loadHealth().catch(error => showStatus(error.message)), 30000);
         window.setInterval(() => loadScanner().catch(error => showStatus(error.message)), 10000);
     } else {
