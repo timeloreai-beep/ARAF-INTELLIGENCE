@@ -430,6 +430,11 @@ app.include_router(ghost_admin.activation_router)
 app.include_router(ai_swarm.router)
 
 
+@app.get("/health", include_in_schema=False)
+async def healthcheck() -> dict:
+    return {"status": "healthy", "service": "araf-intelligence"}
+
+
 @app.get("/", include_in_schema=False)
 async def frontend() -> FileResponse:
     return FileResponse(STATIC_ROOT / "index.html")

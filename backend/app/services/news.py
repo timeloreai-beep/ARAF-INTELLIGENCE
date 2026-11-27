@@ -429,6 +429,8 @@ class NewsEngine:
         for name, api_key, interval, fetch in api_sources:
             if api_key:
                 specs.append((name, interval, fetch))
+                if name not in self._source_status:
+                    self._source_status[name] = {"status": "idle", "reason": "awaiting_first_poll"}
             else:
                 self._source_status[name] = {"status": "not_configured"}
 
@@ -439,6 +441,8 @@ class NewsEngine:
                 lambda client: _coinpaprika(client, settings),
             )
         )
+        if "coinpaprika" not in self._source_status:
+            self._source_status["coinpaprika"] = {"status": "idle", "reason": "awaiting_first_poll"}
 
         for name, url in RSS_FEEDS.items():
             if name == "google_news_rss" and not settings.news_google_rss_enabled:
@@ -451,6 +455,8 @@ class NewsEngine:
                     lambda client, n=name, feed=url: _rss(client, n, feed),
                 )
             )
+            if name not in self._source_status:
+                self._source_status[name] = {"status": "idle", "reason": "awaiting_first_poll"}
         return specs
 
     @property
@@ -459,6 +465,7 @@ class NewsEngine:
 
     def snapshot(self) -> dict[str, Any]:
         remaining = max(0.0, self._priority_until - time.monotonic())
+        _ = self._provider_specs()  # Ensure all providers have initial status
         return {
             "items": list(self._latest),
             "providers": {name: dict(value) for name, value in self._source_status.items()},

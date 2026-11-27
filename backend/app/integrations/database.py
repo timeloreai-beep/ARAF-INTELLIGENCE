@@ -1354,6 +1354,12 @@ class DatabaseHub:
                 model_type = model_types.get(entry.aggregate_type)
                 if target_sessions is None or model_type is None or entry.operation != "upsert":
                     report["errors"][entry.id] = "unsupported_target_or_operation"
+                    async with source_sessions() as source_session:
+                        outbox_row = await source_session.get(ReplicationOutbox, entry.id)
+                        if outbox_row and outbox_row.status == "pending":
+                            outbox_row.status = "dead_letter"
+                            outbox_row.last_error = "unsupported_target_or_operation"
+                            await source_session.commit()
                     continue
                 try:
                     record = _record_from_payload(model_type, entry.payload or {})
@@ -1376,6 +1382,8 @@ class DatabaseHub:
                             if outbox_row:
                                 outbox_row.attempts += 1
                                 outbox_row.last_error = type(exc).__name__
+                                if outbox_row.attempts >= 5:
+                                    outbox_row.status = "dead_letter"
                                 await source_session.commit()
                     except (SQLAlchemyError, OSError, TimeoutError):
                         report["errors"][f"{entry.id}:outbox"] = "update_failed"

@@ -42,7 +42,8 @@ const FASTAPI_AUTH_FALLBACK_TARGETS = new Set([
 ]);
 const LOCAL_TERMINAL_SETTINGS_KEY = "ARAF_TERMINAL_SETTINGS";
 let terminalPreferences = {
-    theme: "light",
+    theme: "dark",
+    accent: "mint",
     news_lang: "en-US",
     news_voice_digest_enabled: true,
     chart_timeframe: "15m"
@@ -400,10 +401,15 @@ function loadLocalTerminalPreferences() {
         console.warn("[Preferences] Ignoring invalid local terminal settings:", error.message);
     }
     applyTerminalTheme(terminalPreferences.theme);
+    if (terminalPreferences.accent) {
+        document.documentElement.style.setProperty('--groww-green', terminalPreferences.accent === 'mint' ? '#00d09c' : terminalPreferences.accent === 'emerald' ? '#059669' : '#3b82f6');
+        document.documentElement.style.setProperty('--groww-blue', terminalPreferences.accent === 'blue' ? '#3b82f6' : terminalPreferences.accent === 'emerald' ? '#059669' : '#00d09c');
+    }
     if (terminalPreferences.news_lang) SESSION_VAULT.newsLang = terminalPreferences.news_lang;
     if (typeof newsVoiceDigestEnabled !== "undefined") {
         newsVoiceDigestEnabled = terminalPreferences.news_voice_digest_enabled !== false;
     }
+    updateAccentButtons();
 }
 
 function loadLocalRiskConfig() {
@@ -436,9 +442,51 @@ function applyTerminalTheme(theme, updateButton = true) {
     if (metaTheme) metaTheme.content = terminalPreferences.theme === "dark" ? "#0b1220" : "#ffffff";
     const button = document.getElementById("themeToggleButton");
     if (button && updateButton) {
-        button.textContent = terminalPreferences.theme === "dark" ? "Light mode" : "Dark mode";
+        button.innerHTML = terminalPreferences.theme === "dark" ? '<i class="fa-solid fa-sun text-sm"></i>' : '<i class="fa-solid fa-moon text-sm"></i>';
         button.setAttribute("aria-pressed", String(terminalPreferences.theme === "dark"));
     }
+    updateThemeSelectorButtons();
+}
+
+function updateThemeSelectorButtons() {
+    const lightBtn = document.getElementById("themeBtnLight");
+    const darkBtn = document.getElementById("themeBtnDark");
+    if (lightBtn && darkBtn) {
+        if (terminalPreferences.theme === "dark") {
+            lightBtn.className = "flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#00d09c]";
+            darkBtn.className = "flex-1 px-3 py-2 rounded-xl bg-[#00d09c] border-2 border-[#00d09c] text-white font-bold text-[10px] transition";
+        } else {
+            lightBtn.className = "flex-1 px-3 py-2 rounded-xl bg-[#00d09c] border-2 border-[#00d09c] text-white font-bold text-[10px] transition";
+            darkBtn.className = "flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#00d09c]";
+        }
+    }
+}
+
+function setTheme(theme) {
+    applyTerminalTheme(theme);
+    void saveTerminalPreferences();
+}
+
+function setAccent(accent) {
+    terminalPreferences.accent = accent;
+    document.documentElement.style.setProperty('--groww-green', accent === 'mint' ? '#00d09c' : accent === 'emerald' ? '#059669' : '#3b82f6');
+    document.documentElement.style.setProperty('--groww-blue', accent === 'blue' ? '#3b82f6' : accent === 'emerald' ? '#059669' : '#00d09c');
+    void saveTerminalPreferences();
+    updateAccentButtons();
+}
+
+function updateAccentButtons() {
+    const accents = ['mint', 'emerald', 'blue'];
+    accents.forEach(a => {
+        const btn = document.getElementById(`accentBtn${a.charAt(0).toUpperCase() + a.slice(1)}`);
+        if (btn) {
+            if (terminalPreferences.accent === a) {
+                btn.className = "flex-1 px-3 py-2 rounded-xl bg-[#00d09c] border-2 border-[#00d09c] text-white font-bold text-[10px] transition";
+            } else {
+                btn.className = "flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#00d09c]";
+            }
+        }
+    });
 }
 
 async function fastApiRequest(path, options = {}) {
@@ -483,11 +531,16 @@ async function syncTerminalPreferences() {
     }
     terminalPreferences = { ...terminalPreferences, ...response.data.preferences };
     applyTerminalTheme(terminalPreferences.theme);
+    if (terminalPreferences.accent) {
+        document.documentElement.style.setProperty('--groww-green', terminalPreferences.accent === 'mint' ? '#00d09c' : terminalPreferences.accent === 'emerald' ? '#059669' : '#3b82f6');
+        document.documentElement.style.setProperty('--groww-blue', terminalPreferences.accent === 'blue' ? '#3b82f6' : terminalPreferences.accent === 'emerald' ? '#059669' : '#00d09c');
+    }
     SESSION_VAULT.newsLang = terminalPreferences.news_lang || "en-US";
     newsVoiceDigestEnabled = terminalPreferences.news_voice_digest_enabled !== false;
     localStorage.setItem(LOCAL_TERMINAL_SETTINGS_KEY, JSON.stringify(terminalPreferences));
     const status = document.getElementById("themeSyncStatus");
     if (status) status.textContent = "Settings synced.";
+    updateAccentButtons();
 }
 
 async function saveTerminalPreferences() {
@@ -2197,7 +2250,7 @@ async function handleSessionWipeLogout() {
 
 async function startSplashScreen() {
     const splash = document.getElementById("splashScreen");
-    const status = document.getElementById("splashBackendStatus");
+    const status = document.getElementById("splashStatusText");
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4500);
     let connected = false;
@@ -2224,7 +2277,14 @@ async function startSplashScreen() {
     if (splash) {
         splash.style.transition = "opacity 500ms cubic-bezier(0.16, 1, 0.3, 1)";
         splash.style.opacity = "0";
-        setTimeout(() => splash.remove(), 500);
+        setTimeout(() => {
+            splash.remove();
+            const appRoot = document.getElementById("appRoot");
+            if (appRoot) appRoot.classList.remove("hidden");
+        }, 500);
+    } else {
+        const appRoot = document.getElementById("appRoot");
+        if (appRoot) appRoot.classList.remove("hidden");
     }
 }
 

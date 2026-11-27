@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#00d09c">
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
         :root {
             --groww-green: #00d09c;
@@ -77,7 +78,7 @@
                 <span id="tickerGold" class="bg-yellow-50 text-yellow-700 px-2 py-0.5 rounded-full text-[9px] font-mono font-bold border border-yellow-200">PAXG: --</span>
             </div>
             <div class="flex items-center gap-1 shrink-0">
-                <button onclick="toggleTheme()" id="themeToggleBtn" class="w-8 h-8 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 flex items-center justify-center transition" aria-label="Toggle theme"><i class="fa-solid fa-moon text-sm"></i></button>
+                <button onclick="toggleTerminalTheme()" id="themeToggleButton" class="w-8 h-8 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 flex items-center justify-center transition" aria-label="Toggle theme"><i class="fa-solid fa-moon text-sm"></i></button>
                 <button onclick="openSettings()" id="settingsBtn" class="w-8 h-8 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 flex items-center justify-center transition" aria-label="Settings"><i class="fa-solid fa-gear text-sm"></i></button>
             </div>
         </header>
@@ -496,6 +497,27 @@
                 </div>
 
                 <div class="groww-card p-3.5 shadow-sm space-y-4 bg-white">
+                    <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-palette text-[#00d09c] mr-2"></i> Theme & Appearance</h3>
+                    <div class="space-y-3">
+                        <label class="flex flex-col gap-1.5">
+                            <span class="text-[8px] text-slate-500 font-mono">Theme</span>
+                            <div class="flex space-x-2">
+                                <button onclick="setTheme('light')" id="themeBtnLight" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#00d09c]"><i class="fa-solid fa-sun mr-1"></i> Light</button>
+                                <button onclick="setTheme('dark')" id="themeBtnDark" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#00d09c]"><i class="fa-solid fa-moon mr-1"></i> Dark</button>
+                            </div>
+                        </label>
+                        <label class="flex flex-col gap-1.5">
+                            <span class="text-[8px] text-slate-500 font-mono">Accent Color</span>
+                            <div class="flex space-x-2">
+                                <button onclick="setAccent('mint')" id="accentBtnMint" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#00d09c]">Mint</button>
+                                <button onclick="setAccent('emerald')" id="accentBtnEmerald" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#059669]">Emerald</button>
+                                <button onclick="setAccent('blue')" id="accentBtnBlue" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#3b82f6]">Blue</button>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="groww-card p-3.5 shadow-sm space-y-4 bg-white">
                     <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-bell text-amber-500 mr-2"></i> Alerts & Notifications</h3>
                     <div class="space-y-2">
                         <label class="flex items-center gap-2"><input type="checkbox" id="alertIntradaySqOff" class="w-4 h-4 accent-[#00d09c] rounded border-slate-300"><span class="text-[10px] text-slate-700">Intraday Square-off Warning (3:10 PM)</span></label>
@@ -640,6 +662,241 @@
                 <p id="toastCandleDesc" class="text-[10px] text-slate-600 mt-0.5 leading-tight font-medium"></p>
             </div>
             <button onclick="event.stopPropagation(); dismissOpportunityToast()" class="text-slate-400 hover:text-slate-900 text-xs p-1"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <!-- Authentication Modals -->
+        <div id="authKycModal" class="fixed inset-0 z-[60] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card w-full max-w-md p-4 space-y-4 bg-white relative">
+                <button type="button" onclick="handleSafeAuthModalClose()" aria-label="Close" class="absolute top-2 right-2 w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center"><i class="fa-solid fa-xmark text-sm"></i></button>
+
+                <!-- Step 1: Phone/Email Entry -->
+                <div id="authStepPhone" class="space-y-3">
+                    <div class="text-center">
+                        <h2 class="text-lg font-extrabold text-slate-900 heading-font">Welcome to ARAF</h2>
+                        <p class="text-slate-500 text-sm mt-1">Sign in to access your Institutional Terminal</p>
+                    </div>
+                    <div id="authCustomErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+
+                    <div class="space-y-3">
+                        <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
+                            <button onclick="switchAuthMode('LOGIN')" id="tabAuthLogin" class="flex-1 py-2 rounded-xl groww-btn-green transition shadow-sm font-black">Login</button>
+                            <button onclick="switchAuthMode('SIGNUP')" id="tabAuthSignup" class="flex-1 py-2 rounded-xl text-slate-500 hover:text-slate-900 transition font-bold">Sign Up</button>
+                        </div>
+
+                        <form id="formClientIdLogin" class="space-y-3" onsubmit="event.preventDefault(); handleTraderUidLogin()">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Trader UID or Email</label>
+                                <input type="text" id="loginTraderUid" autocomplete="username" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Password</label>
+                                <input type="password" id="loginPassword" autocomplete="current-password" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <button type="submit" id="btnLoginUidSubmit" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95"><i class="fa-solid fa-lock-open mr-1"></i> <span>Login Securely</span></button>
+                        </form>
+
+                        <form id="formNewRegistration" class="space-y-3 hidden" onsubmit="event.preventDefault(); handleNewUserSignup()">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Email Address</label>
+                                <input type="email" id="signupEmailInput" autocomplete="email" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Password (min 6 chars)</label>
+                                <input type="password" id="signupPasswordInput" autocomplete="new-password" required minlength="6" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Confirm Password</label>
+                                <input type="password" id="signupConfirmPasswordInput" autocomplete="new-password" required minlength="6" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <button type="submit" id="btnSignupSubmit" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95"><i class="fa-solid fa-user-plus mr-1"></i> <span>Verify Gmail OTP & Create Account</span></button>
+                        </form>
+
+                        <div class="relative">
+                            <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-200"></div></div>
+                            <div class="relative flex justify-center text-sm">
+                                <span class="px-2 bg-white text-slate-500">Or continue with</span>
+                            </div>
+                        </div>
+                        <button onclick="handleGoogleOneTapLogin()" class="w-full flex items-center justify-center gap-2 bg-white border border-slate-200 text-slate-700 py-2.5 rounded-xl text-sm font-bold hover:bg-slate-50 transition"><i class="fa-brands fa-google text-lg"></i> Google One-Tap</button>
+
+                        <div id="firebaseEmailVerifyBackupBox" class="hidden bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                            <p class="text-sm text-amber-800">Email verification required. Click the link sent to your inbox.</p>
+                            <button onclick="sendFirebaseVerificationBackup()" class="w-full bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold py-2 rounded-xl text-sm transition">Resend Verification Email</button>
+                            <button onclick="recheckFirebaseEmailVerified()" class="w-full bg-white border border-slate-200 text-slate-700 font-bold py-2 rounded-xl text-sm transition">I've Verified - Check Again</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2: KYC Form -->
+                <div id="authStepKyc" class="space-y-3 hidden">
+                    <div class="text-center">
+                        <h2 class="text-lg font-extrabold text-slate-900 heading-font">Complete Your KYC</h2>
+                        <p class="text-slate-500 text-sm mt-1">Required for regulatory compliance</p>
+                    </div>
+                    <div id="kycErrorBanner" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                    <form onsubmit="event.preventDefault(); handleSubmitForVerification()" class="space-y-3">
+                        <div>
+                            <label class="text-[8px] text-slate-500 font-mono block mb-1">Full Legal Name</label>
+                            <input type="text" id="kycFullName" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Date of Birth</label>
+                                <input type="date" id="kycDob" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Phone Number</label>
+                                <input type="tel" id="kycPhone" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-[8px] text-slate-500 font-mono block mb-1">PAN Number</label>
+                            <input type="text" id="kycPanNumber" required maxlength="10" placeholder="ABCDE1234F" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c] uppercase">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Aadhaar (Last 4 Digits)</label>
+                                <input type="text" id="kycAadhaarLast4" required maxlength="4" inputmode="numeric" pattern="[0-9]*" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c] text-center tracking-widest">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Income Bracket</label>
+                                <select id="kycIncome" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                                    <option value="<5L">Below ₹5 Lakhs</option>
+                                    <option value="5L-10L">₹5-10 Lakhs</option>
+                                    <option value="10L-25L">₹10-25 Lakhs</option>
+                                    <option value="25L-50L">₹25-50 Lakhs</option>
+                                    <option value="50L-1CR">₹50 Lakhs - 1 Crore</option>
+                                    <option value=">1CR">Above ₹1 Crore</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Trading Experience</label>
+                                <select id="kycExperience" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                                    <option value="BEGINNER">Beginner (< 1 year)</option>
+                                    <option value="INTERMEDIATE">Intermediate (1-3 years)</option>
+                                    <option value="ADVANCED">Advanced (3-5 years)</option>
+                                    <option value="EXPERT">Expert (5+ years)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Authorized Segment</label>
+                                <select id="kycSegment" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                                    <option value="EQUITY">Equity</option>
+                                    <option value="FNO">F&O</option>
+                                    <option value="BOTH">Both Equity & F&O</option>
+                                    <option value="COMMODITY">Commodity</option>
+                                    <option value="CURRENCY">Currency</option>
+                                </select>
+                            </div>
+                        </div>
+                        <label class="flex items-start gap-2">
+                            <input type="checkbox" id="kycRiskConsent" required class="w-4 h-4 mt-0.5 accent-[#00d09c] rounded border-slate-300">
+                            <span class="text-sm text-slate-700">I understand trading involves substantial risk of loss and I accept full responsibility for my trading decisions.</span>
+                        </label>
+                        <button type="submit" id="btnSubmitKyc" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95"><i class="fa-solid fa-file-shield"></i> <span>Submit Verification to Admin Review</span></button>
+                    </form>
+                </div>
+
+                <!-- Step 3: Pending Admin Approval -->
+                <div id="authStepPending" class="space-y-3 hidden text-center">
+                    <div class="w-16 h-16 mx-auto rounded-full bg-amber-100 border border-amber-200 flex items-center justify-center">
+                        <i class="fa-solid fa-hourglass-half text-2xl text-amber-600"></i>
+                    </div>
+                    <h3 class="text-lg font-extrabold text-slate-900 heading-font">Pending Admin Approval</h3>
+                    <p class="text-slate-600 text-sm">Your compliance profile has been submitted to ARAF Admin Desk.</p>
+                    <p class="text-slate-500 text-xs mt-1">Your app will unlock immediately upon verification.</p>
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left space-y-1">
+                        <div class="flex justify-between"><span class="text-[8px] text-slate-500 font-mono">Name</span><b id="pendingUserName" class="text-slate-900">-</b></div>
+                        <div class="flex justify-between"><span class="text-[8px] text-slate-500 font-mono">Trader UID</span><b id="pendingUserUid" class="text-slate-900">-</b></div>
+                        <div class="flex justify-between"><span class="text-[8px] text-slate-500 font-mono">PAN</span><b id="pendingUserPan" class="text-slate-900">-</b></div>
+                        <div class="flex justify-between"><span class="text-[8px] text-slate-500 font-mono">KYC Status</span><b id="pendingUserKycStatus" class="text-amber-600">PENDING_ADMIN_REVIEW</b></div>
+                    </div>
+                    <button onclick="handleAuthBackNavigation()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 rounded-xl text-sm transition">Back to Login</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Account Recovery / OTP Modal -->
+        <div id="accountRecoveryModal" class="fixed inset-0 z-[60] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card w-full max-w-md p-4 space-y-4 bg-white relative">
+                <button type="button" onclick="closeAccountRecoveryModal()" aria-label="Close" class="absolute top-2 right-2 w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center"><i class="fa-solid fa-xmark text-sm"></i></button>
+
+                <!-- Step 1: Email Entry -->
+                <div id="recoveryStepEmail" class="space-y-3 text-center">
+                    <h2 class="text-lg font-extrabold text-slate-900 heading-font" id="recoveryTitle">Account Recovery</h2>
+                    <p class="text-slate-500 text-sm" id="recoverySubtitle">Enter your email to receive a 6-digit OTP</p>
+                    <div id="recoveryErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                    <div>
+                        <label class="text-[8px] text-slate-500 font-mono block mb-1">Email Address</label>
+                        <input type="email" id="recoveryEmailInput" autocomplete="email" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                    <button onclick="sendRecoveryOtpToEmail()" id="btnSendOtp" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Send OTP to Email</button>
+                    <button onclick="sendPinResetServerOtp()" id="btnSendPinOtp" class="hidden w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Send PIN Reset OTP</button>
+                </div>
+
+                <!-- Step 2: OTP Input -->
+                <div id="recoveryStepOtp" class="space-y-3 hidden text-center">
+                    <h2 class="text-lg font-extrabold text-slate-900 heading-font">Verify OTP</h2>
+                    <p class="text-slate-500 text-sm">A 6-digit code has been sent to <b id="displayTargetEmail"></b></p>
+                    <div id="recoveryErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                    <div>
+                        <label class="text-[8px] text-slate-500 font-mono block mb-1">Enter 6-Digit OTP</label>
+                        <input type="text" id="recoveryOtpInput" inputmode="numeric" maxlength="6" pattern="[0-9]*" required autocomplete="one-time-code" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                    <button onclick="verifyRecoveryOtp()" id="btnVerifyOtpSubmit" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Verify OTP Code</button>
+                    <button onclick="backToSignupEmailStep()" class="w-full bg-white border border-slate-200 text-slate-700 font-bold py-2 rounded-xl text-sm transition mt-2">Back</button>
+                </div>
+
+                <!-- Step 3: Reset PIN/Password -->
+                <div id="recoveryStepReset" class="space-y-3 hidden text-center">
+                    <h2 class="text-lg font-extrabold text-slate-900 heading-font">Set New Master PIN</h2>
+                    <p class="text-slate-500 text-sm">Your Trader UID: <b id="recoveredTraderUidText"></b></p>
+                    <div id="recoveryErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                    <div>
+                        <label class="text-[8px] text-slate-500 font-mono block mb-1">New 6-Digit PIN</label>
+                        <input type="password" id="resetNewPin" inputmode="numeric" maxlength="6" pattern="[0-9]*" required autocomplete="new-password" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                    <button onclick="finalizeAccountCredentialsReset()" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Save PIN & Unlock</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Unlock Modal (PIN Entry) -->
+        <div id="quickUnlockModal" class="fixed inset-0 z-[60] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card w-full max-w-md p-4 space-y-4 bg-white relative">
+                <h2 class="text-lg font-extrabold text-slate-900 heading-font text-center" id="unlockWelcomeTitle">Welcome back!</h2>
+                <p class="text-slate-500 text-sm text-center">Enter your 6-digit Master PIN to unlock</p>
+                <div id="unlockErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                <div>
+                    <label class="text-[8px] text-slate-500 font-mono block mb-1">Master PIN</label>
+                    <input type="password" id="pinDigitInput" inputmode="numeric" maxlength="6" pattern="[0-9]*" autocomplete="one-time-code" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <button onclick="handlePinSubmitUnlock()" id="btnSubmitUnlock" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95"><i class="fa-solid fa-lock-open mr-1"></i> <span>Unlock App</span></button>
+                <div class="flex justify-center gap-3 mt-2">
+                    <button onclick="handleForgotPinReset()" class="text-sm text-[#00d09c] font-bold hover:underline">Forgot PIN?</button>
+                    <button onclick="handleSwitchAccountOrDevice()" class="text-sm text-slate-500 font-bold hover:text-slate-700">Switch Account</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Setup PIN Modal (First Time) -->
+        <div id="setupPinModal" class="fixed inset-0 z-[60] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card w-full max-w-md p-4 space-y-4 bg-white relative">
+                <h2 class="text-lg font-extrabold text-slate-900 heading-font text-center">Set Your Master PIN</h2>
+                <p class="text-slate-500 text-sm text-center">Create a 6-digit PIN to secure your terminal</p>
+                <div id="setupPinErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                <div>
+                    <label class="text-[8px] text-slate-500 font-mono block mb-1">New PIN</label>
+                    <input type="password" id="newPinInput" inputmode="numeric" maxlength="6" pattern="[0-9]*" autocomplete="new-password" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <div>
+                    <label class="text-[8px] text-slate-500 font-mono block mb-1">Confirm PIN</label>
+                    <input type="password" id="confirmPinInput" inputmode="numeric" maxlength="6" pattern="[0-9]*" autocomplete="new-password" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <button onclick="handleSaveInitialPinAndBiometric()" id="btnSaveInitialPin" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Save PIN Securely</button>
+            </div>
         </div>
     </div>
 
