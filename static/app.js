@@ -363,8 +363,9 @@ async function secureApiCall(target, options = {}) {
 
     try {
         const headers = { ...(options.headers || {}) };
-        if (options.headers?.Authorization) {
-            headers.Authorization = options.headers.Authorization;
+        if (auth.currentUser) {
+            const idToken = await auth.currentUser.getIdToken(options.forceTokenRefresh === true);
+            headers["Authorization"] = `Bearer ${idToken}`;
         }
         if (SESSION_VAULT.pinSessionToken) {
             headers["X-Pin-Token"] = SESSION_VAULT.pinSessionToken;
@@ -493,8 +494,8 @@ async function fastApiRequest(path, options = {}) {
     const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || 12000);
     try {
         const headers = { ...(options.headers || {}) };
-        if (options.headers?.Authorization) {
-            headers.Authorization = options.headers.Authorization;
+        if (auth.currentUser) {
+            headers.Authorization = `Bearer ${await auth.currentUser.getIdToken(options.forceTokenRefresh === true)}`;
         }
         if (SESSION_VAULT.pinSessionToken) {
             headers["X-Pin-Token"] = SESSION_VAULT.pinSessionToken;
@@ -521,26 +522,36 @@ async function fastApiRequest(path, options = {}) {
 }
 
 async function syncTerminalPreferences() {
-    try {
-        const saved = JSON.parse(localStorage.getItem(LOCAL_TERMINAL_SETTINGS_KEY) || "{}");
-        terminalPreferences = { ...terminalPreferences, ...(saved && typeof saved === "object" ? saved : {}) };
-    } catch (error) {
-        console.warn("[Preferences] Ignoring invalid local terminal settings:", error.message);
+    if (!auth.currentUser) return;
+    const response = await fastApiRequest("/preferences");
+    if (!response.ok || !response.data?.preferences) {
+        const status = document.getElementById("themeSyncStatus");
+        if (status) status.textContent = "Local preference active; server sync unavailable.";
+        return;
     }
+    terminalPreferences = { ...terminalPreferences, ...response.data.preferences };
     applyTerminalTheme(terminalPreferences.theme);
     if (terminalPreferences.accent) {
         document.documentElement.style.setProperty('--groww-green', terminalPreferences.accent === 'mint' ? '#00d09c' : terminalPreferences.accent === 'emerald' ? '#059669' : '#3b82f6');
         document.documentElement.style.setProperty('--groww-blue', terminalPreferences.accent === 'blue' ? '#3b82f6' : terminalPreferences.accent === 'emerald' ? '#059669' : '#00d09c');
     }
-    if (terminalPreferences.news_lang) SESSION_VAULT.newsLang = terminalPreferences.news_lang;
-    if (typeof newsVoiceDigestEnabled !== "undefined") {
-        newsVoiceDigestEnabled = terminalPreferences.news_voice_digest_enabled !== false;
-    }
+    SESSION_VAULT.newsLang = terminalPreferences.news_lang || "en-US";
+    newsVoiceDigestEnabled = terminalPreferences.news_voice_digest_enabled !== false;
+    localStorage.setItem(LOCAL_TERMINAL_SETTINGS_KEY, JSON.stringify(terminalPreferences));
+    const status = document.getElementById("themeSyncStatus");
+    if (status) status.textContent = "Settings synced.";
     updateAccentButtons();
 }
 
 async function saveTerminalPreferences() {
     localStorage.setItem(LOCAL_TERMINAL_SETTINGS_KEY, JSON.stringify(terminalPreferences));
+    if (!auth.currentUser) return;
+    const response = await fastApiRequest("/preferences", {
+        method: "PUT",
+        body: terminalPreferences
+    });
+    const status = document.getElementById("themeSyncStatus");
+    if (status) status.textContent = response.ok ? "Settings synced." : "Saved locally; server sync failed.";
 }
 
 function toggleTerminalTheme() {
@@ -555,7 +566,18 @@ async function testFastApiQuote(broker) {
     output.textContent = "Checking authenticated read-only quote endpoint...";
 
     try {
-        // Zero-login: skip Firebase auth, use public endpoints
+        if (!auth.currentUser) throw new Error("Sign in first; Firebase authentication is required.");
+        const token = await auth.currentUser.getIdToken();
+        const sessionResponse = await fetch(`${FASTAPI_BASE_URL}/auth/session`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${token}` },
+            cache: "no-store"
+        });
+        const sessionData = await sessionResponse.json().catch(() => ({}));
+        if (!sessionResponse.ok) {
+            throw new Error(`FastAPI session verification failed (${sessionResponse.status}).`);
+        }
+
         let endpoint;
         let body;
         if (broker === "SHOONYA") {
@@ -576,6 +598,7 @@ async function testFastApiQuote(broker) {
         const response = await fetch(`${FASTAPI_BASE_URL}${endpoint}`, {
             method: "POST",
             headers: {
+                "Authorization": `Bearer ${token}`,
                 "Content-Type": "application/json"
             },
             body: JSON.stringify(body),
@@ -586,7 +609,7 @@ async function testFastApiQuote(broker) {
             const detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data);
             throw new Error(`API ${response.status}: ${detail}`);
         }
-        data.session_persistence = { redis: "cache_hit" };
+        data.session_persistence = sessionData.persistence;
         output.textContent = JSON.stringify(data, null, 2);
     } catch (error) {
         output.textContent = `Feed test failed: ${error.message || "Unknown error"}`;
@@ -777,7 +800,7 @@ function applyHardLockUi(lossAmount) {
 }
 
 function syncDailyPnlToServer(dailyPnlInr, force = false) {
-    if (!Number.isFinite(dailyPnlInr) || isPnlBreachSyncInFlight) return;
+    if (!auth.currentUser || !Number.isFinite(dailyPnlInr) || isPnlBreachSyncInFlight) return;
     const now = Date.now();
     if (!force && now - lastRiskPnlSyncAt < 1000) return;
     lastRiskPnlSyncAt = now;
@@ -804,6 +827,7 @@ function syncDailyPnlToServer(dailyPnlInr, force = false) {
 }
 
 async function syncServerRiskState() {
+    if (!auth.currentUser) return false;
     try {
         const res = await fastApiRequest("/risk/state");
         if (!res.ok || !res.data?.risk) {
@@ -945,7 +969,15 @@ function checkIntradaySquareOffReminder() {
 }
 
 function checkProAccess() {
-    return true;
+    if (!SESSION_VAULT.activeUser) return false;
+    const st = SESSION_VAULT.activeUser.kycStatus;
+    if (st !== "APPROVED" && st !== "VERIFIED_COMPLIANT") {
+        showPendingAdminHoldScreen(SESSION_VAULT.activeUser);
+        return false;
+    }
+    if (isSubscriptionActive(SESSION_VAULT.activeUser)) return true;
+    showSubscriptionPaywall();
+    return false;
 }
 
 function isSubscriptionActive(profile) {
@@ -977,7 +1009,24 @@ function updateSubscriptionStatusUi() {
 }
 
 function showSubscriptionPaywall() {
-    // Zero-login: no subscription wall - access is always available
+    const profile = SESSION_VAULT.activeUser;
+    const priceEl = document.getElementById("displayDynamicSubPrice");
+    if (priceEl) {
+        priceEl.textContent = `₹${BUSINESS_PAYMENT_CONFIG.monthlyPrice.toLocaleString("en-IN")}`;
+    }
+    const uidDisplay = document.getElementById("displayUserTraderUid");
+    if (uidDisplay) uidDisplay.textContent = profile?.traderUid || "PENDING";
+    document.getElementById("subscriptionLockModal")?.classList.remove("hidden");
+    document.getElementById("authKycModal")?.classList.add("hidden");
+    document.getElementById("quickUnlockModal")?.classList.add("hidden");
+    document.getElementById("setupPinModal")?.classList.add("hidden");
+    document.getElementById("subscriptionPayButton")?.focus({ preventScroll: true });
+    void syncGlobalSubscriptionPrice();
+    if (!subscriptionStatusPollTimer && auth.currentUser) {
+        subscriptionStatusPollTimer = window.setInterval(() => {
+            if (!document.hidden) void refreshSubscriptionStatus();
+        }, 15000);
+    }
 }
 
 async function refreshSubscriptionStatus() {
@@ -1086,12 +1135,14 @@ async function triggerDirectUpiPayment() {
     const months = getSelectedSubscriptionMonths();
     if (status) status.textContent = "Preparing your secure UPI payment details…";
     try {
-        // Zero-login: generate UPI intent without requiring auth token
+        const idToken = auth.currentUser
+            ? await auth.currentUser.getIdToken()
+            : null;
         const response = await fetch(
             `${FASTAPI_BASE_URL}/auth/subscription/upi-intent?months=${months}`,
             {
                 method: "GET",
-                headers: { "Content-Type": "application/json" },
+                headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
                 cache: "no-store"
             }
         );
@@ -1165,9 +1216,14 @@ async function submitSubscriptionPaymentProof() {
         if (status) status.textContent = "Payment proof exceeds 5 MB.";
         return;
     }
-    // Zero-login: skip auth check for payment proof submission
+    if (!auth.currentUser) {
+        if (status) status.textContent = "Sign in before sending payment proof.";
+        return;
+    }
+
     if (status) status.textContent = "Sending payment proof to Telegram admin…";
     try {
+        const idToken = await auth.currentUser.getIdToken();
         const form = new FormData();
         form.append("months", String(months));
         form.append("proof", file);
@@ -1175,6 +1231,7 @@ async function submitSubscriptionPaymentProof() {
             `${FASTAPI_BASE_URL}/auth/subscription/payment-proof`,
             {
                 method: "POST",
+                headers: { Authorization: `Bearer ${idToken}` },
                 body: form
             }
         );
@@ -1276,7 +1333,12 @@ async function handlePinSubmitUnlock() {
         errMsg.classList.remove("hidden");
         return;
     }
-    // Zero-login: just set the pinSessionToken directly
+    if (!auth.currentUser) {
+        errMsg.textContent = "Session expired. Please login again.";
+        errMsg.classList.remove("hidden");
+        return;
+    }
+
     errMsg.classList.add("hidden");
     const btn = document.getElementById("btnSubmitUnlock");
     if (btn) { btn.disabled = true; btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin mr-1"></i> Verifying Server PIN...`; }
@@ -1303,6 +1365,28 @@ async function handlePinSubmitUnlock() {
 }
 
 async function unlockTerminalSuccess() {
+    const kycStat = SESSION_VAULT.activeUser?.kycStatus;
+    if (SESSION_VAULT.activeUser && kycStat !== "APPROVED" && kycStat !== "VERIFIED_COMPLIANT") {
+        showPendingAdminHoldScreen(SESSION_VAULT.activeUser);
+        return;
+    }
+    if (SESSION_VAULT.activeUser && !isSubscriptionActive(SESSION_VAULT.activeUser)) {
+        isTerminalUnlocked = false;
+        showSubscriptionPaywall();
+        return;
+    }
+
+    if (auth.currentUser) {
+        const [riskReady, automationReady] = await Promise.all([
+            syncServerRiskState(),
+            syncAutoTradeState()
+        ]);
+        if (!riskReady || !automationReady) {
+            isTerminalUnlocked = false;
+            checkHardKillSwitchLock();
+            return;
+        }
+    }
     isTerminalUnlocked = true;
     if (!backendOpportunityPollTimer) {
         backendOpportunityPollTimer = setInterval(pollBackendOpportunities, 3000);
@@ -1437,79 +1521,139 @@ function dismissQuickUnlockModal() {
 }
 
 auth.onAuthStateChanged(async (user) => {
-    // Zero-login: always unlock terminal on auth state change
-    isTerminalUnlocked = true;
-    if (!backendOpportunityPollTimer) {
-        backendOpportunityPollTimer = setInterval(pollBackendOpportunities, 3000);
-    }
-    if (!backendAutomationScanTimer) {
-        void runBackendAutomationScan();
-        backendAutomationScanTimer = setInterval(runBackendAutomationScan, 45000);
-    }
-    document.getElementById("quickUnlockModal")?.classList.add("hidden");
-    document.getElementById("setupPinModal")?.classList.add("hidden");
-    document.getElementById("authKycModal")?.classList.add("hidden");
-
-    if (SESSION_VAULT.savedCloudUser) {
-        const d = SESSION_VAULT.savedCloudUser;
-        SESSION_VAULT.activeUser = d.profile;
-        if (d.preferences) {
-            SESSION_VAULT.voiceLang = d.preferences.voiceLang || "en-US";
-            SESSION_VAULT.newsLang = d.preferences.newsLang || "en-US";
-            SESSION_VAULT.aiChatLang = d.preferences.aiChatLang || "en-US";
-
-            const langDropdown = document.getElementById("settingVoiceLanguage");
-            if (langDropdown) langDropdown.value = SESSION_VAULT.voiceLang;
-            const chatDropdown = document.getElementById("aiChatLangSelect");
-            if (chatDropdown) chatDropdown.value = SESSION_VAULT.aiChatLang;
+    if (user) {
+        isTerminalUnlocked = false;
+        SESSION_VAULT.userKey = user.uid;
+        const [, riskReady, autoTradeReady] = await Promise.all([
+            syncTerminalPreferences(),
+            syncServerRiskState(),
+            syncAutoTradeState()
+        ]);
+        if (!riskReady || !autoTradeReady) {
+            isTerminalUnlocked = false;
+            document.getElementById("hudUserStatusText").textContent =
+                "Server risk/kill-switch status unavailable. Trading remains blocked.";
+            return;
         }
-        if (Array.isArray(d.tradeHistory)) {
-            SESSION_VAULT.tradeHistory = d.tradeHistory;
-            renderTradeHistory();
+        renderAutoTradeUi();
+        checkHardKillSwitchLock();
+        let loadRes = await ArafCloudMaster.loadUserFromAnyDevice(false);
+
+        if (loadRes.status === "ERROR" && loadRes.httpStatus === 401) {
+            loadRes = await ArafCloudMaster.loadUserFromAnyDevice(true);
         }
+
+        if (loadRes.status === "ERROR") {
+            const errBox = document.getElementById("authCustomErrorMsg");
+            if (errBox) {
+                errBox.textContent = `Server Error (${loadRes.httpStatus || 0}): ${loadRes.message || "Check connection or re-login."}`;
+                errBox.classList.remove("hidden");
+            }
+            document.getElementById("hudUserStatusText").textContent = "Server unreachable. Check connection & reload.";
+            return;
+        }
+
+        const cloudData = loadRes.fullData;
+        if (cloudData?.profile?.isActive === false) {
+            SESSION_VAULT.activeUser = cloudData.profile;
+            showPendingAdminHoldScreen(cloudData.profile);
+            alert("Your account access is disabled. Contact ARAF support for assistance.");
+            return;
+        }
+        if (cloudData && cloudData.profile && cloudData.profile.kycStatus) {
+            SESSION_VAULT.savedCloudUser = cloudData;
+            SESSION_VAULT.activeUser = cloudData.profile;
+
+            const st = cloudData.profile.kycStatus;
+            updateSubscriptionStatusUi();
+            if (cloudData.profile.isActive === false) {
+                showPendingAdminHoldScreen(cloudData.profile);
+                return;
+            }
+            if (st !== "APPROVED" && st !== "VERIFIED_COMPLIANT") {
+                showPendingAdminHoldScreen(cloudData.profile);
+                return;
+            }
+            if (!isSubscriptionActive(cloudData.profile)) {
+                showSubscriptionPaywall();
+                return;
+            }
+
+            if (SESSION_VAULT.hasServerPin) {
+                const savedPinTok = sessionStorage.getItem("ARAF_PIN_SESSION");
+                if (savedPinTok) {
+                    SESSION_VAULT.pinSessionToken = savedPinTok;
+                    unlockTerminalSuccess();
+                } else if (isTerminalUnlocked && SESSION_VAULT.pinSessionToken) {
+                    unlockTerminalSuccess();
+                } else {
+                    document.getElementById("unlockWelcomeTitle").textContent = `Welcome, ${cloudData.profile?.fullName || "Trader"}!`;
+                    document.getElementById("quickUnlockModal")?.classList.remove("hidden");
+                    document.getElementById("authKycModal")?.classList.add("hidden");
+                }
+            } else {
+                document.getElementById("authKycModal")?.classList.add("hidden");
+                document.getElementById("setupPinModal")?.classList.remove("hidden");
+            }
+        } else {
+            document.getElementById("authStepPhone")?.classList.add("hidden");
+            document.getElementById("authStepKyc")?.classList.remove("hidden");
+            document.getElementById("authKycModal")?.classList.remove("hidden");
+            if (!user.emailVerified && !isServerOtpVerifiedThisSession) {
+                document.getElementById("firebaseEmailVerifyBackupBox")?.classList.remove("hidden");
+            }
+        }
+    } else {
+        if (subscriptionStatusPollTimer) clearInterval(subscriptionStatusPollTimer);
+        subscriptionStatusPollTimer = null;
+        isTerminalUnlocked = false;
+        serverRiskStateLoaded = false;
+        serverAutoTradeStateLoaded = false;
+        riskPnlSyncFailed = true;
+        SESSION_VAULT.pinSessionToken = null;
+        if (backendOpportunityPollTimer) clearInterval(backendOpportunityPollTimer);
+        if (backendAutomationScanTimer) clearInterval(backendAutomationScanTimer);
+        backendOpportunityPollTimer = null;
+        backendAutomationScanTimer = null;
+        backendAutomationScanBusy = false;
+        OPPORTUNITY_QUEUE = [];
+        dismissOpportunityPopup();
+        sessionStorage.removeItem("ARAF_PIN_SESSION");
+        document.getElementById("quickUnlockModal")?.classList.add("hidden");
+        document.getElementById("authKycModal")?.classList.remove("hidden");
     }
-
-    const name = SESSION_VAULT.activeUser?.fullName || "ARAF TRADER";
-    const traderUid = SESSION_VAULT.activeUser?.traderUid || "PENDING";
-    document.getElementById("hudUserStatusText").innerHTML =
-        `<span class="w-1.5 h-1.5 rounded-full bg-[#00d09c] animate-pulse mr-1"></span> <span id="hudDynamicUserName">${sanitizeCleanText(name)}</span> • App Active`;
-
-    const profileNameEl = document.getElementById("settingsProfileName");
-    const profileUidEl = document.getElementById("settingsProfileUid");
-    const profileKycEl = document.getElementById("settingsKycBadge");
-
-    if (profileNameEl) profileNameEl.textContent = name.toUpperCase();
-    if (profileUidEl) profileUidEl.textContent = traderUid;
-    if (profileKycEl) profileKycEl.textContent = `KYC: ${SESSION_VAULT.activeUser?.kycStatus || "PENDING"}`;
-
-    updateVipTrialBadgeUi();
-    await refreshBrokerVaultStatus();
-    await Promise.allSettled([
-        syncRealBrokerBalances(),
-        initSyncPositionsToMemory(),
-        syncBrokerHoldingsAndOrders(),
-        fetchMasterOrPublicIndianFeed(),
-        syncCoinDcxOrBinanceFeed(),
-        syncAutoTradeState()
-    ]);
-    checkHardKillSwitchLock();
-
-    const welcomeVoice = (SESSION_VAULT.voiceLang === "bn-IN")
-        ? "Welcome trader, your Pro Trading app is unlocked. Today only disciplined, rule-based trades."
-        : "Pro trading app unlocked. Ready for disciplined execution.";
-    explainTextFriendly(welcomeVoice, "App Live");
-    startPeriodicVoiceScanner();
 });
 
 let pendingAuthSession = { email: "", pass: "", mode: "SIGNUP" };
 let recoverySessionState = { email: "", mode: "PASSWORD_RESET" };
 
 function handleSafeAuthModalClose() {
-    // Zero-login: no auth modals
+    if (!isTerminalUnlocked || !auth.currentUser || !SESSION_VAULT.pinSessionToken) {
+        const err = document.getElementById("authCustomErrorMsg");
+        if (err) {
+            err.textContent = "Access Denied: Login & Admin KYC Approval required to use app .";
+            err.classList.remove("hidden");
+        }
+        return;
+    }
+    const st = SESSION_VAULT.activeUser?.kycStatus;
+    if (st !== "APPROVED" && st !== "VERIFIED_COMPLIANT") return;
+    document.getElementById("authKycModal")?.classList.add("hidden");
 }
 
 function handleAuthBackNavigation() {
-    // Zero-login: no auth back navigation needed
+    const kycStep = document.getElementById("authStepKyc");
+    const pendingStep = document.getElementById("authStepPending");
+    const formSign = document.getElementById("formNewRegistration");
+
+    if (kycStep && !kycStep.classList.contains("hidden")) { backFromKycToAuthTabs(); return; }
+    if (pendingStep && !pendingStep.classList.contains("hidden")) {
+        pendingStep.classList.add("hidden");
+        document.getElementById("authStepPhone")?.classList.remove("hidden");
+        switchAuthMode("LOGIN");
+        return;
+    }
+    if (formSign && !formSign.classList.contains("hidden")) { switchAuthMode("LOGIN"); return; }
 }
 
 function backFromKycToAuthTabs() {
@@ -1841,11 +1985,25 @@ async function finalizeAccountCredentialsReset() {
 }
 
 function showPendingAdminHoldScreen(profileObj) {
-    // Zero-login: no admin hold screen - access is always available
     document.getElementById("quickUnlockModal")?.classList.add("hidden");
     document.getElementById("setupPinModal")?.classList.add("hidden");
-    document.getElementById("authKycModal")?.classList.add("hidden");
-}
+    document.getElementById("authKycModal")?.classList.remove("hidden");
+    document.getElementById("authStepPhone")?.classList.add("hidden");
+    document.getElementById("authStepKyc")?.classList.add("hidden");
+    document.getElementById("authStepPending")?.classList.remove("hidden");
+
+    const revoked = profileObj.isActive === false;
+    document.querySelector("#authStepPending h3").textContent =
+        revoked ? "Account Access Revoked" : "Pending Admin Approval";
+    document.querySelector("#authStepPending > p").textContent = revoked
+        ? "An administrator has revoked this account's access. Contact ARAF support if you believe this is a mistake."
+        : "Your compliance profile has been submitted to ARAF Admin Desk. Your app will unlock immediately upon verification.";
+    document.getElementById("pendingUserKycStatus").textContent =
+        revoked ? "ACCESS_REVOKED" : (profileObj.kycStatus || "PENDING_ADMIN_REVIEW");
+    document.getElementById("pendingUserName").textContent = profileObj.fullName || "-";
+    document.getElementById("pendingUserUid").textContent = profileObj.traderUid || "-";
+    document.getElementById("pendingUserPan").textContent = profileObj.panMasked || profileObj.pan || "-";
+};
 
 async function handleSubmitForVerification() {
     const errBox = document.getElementById("kycErrorBanner");
@@ -6554,13 +6712,26 @@ function exportGovernanceAuditTrail() {
 }
 
 function switchTab(name) {
-    window.history.pushState({ tab: name }, "", `?tab=${name}`);
+    // Update browser history for SPA navigation
+    window.history.pushState({ tab: name }, `ARAF - ${name}`, `?tab=${name}`);
+    if (
+        SESSION_VAULT.activeUser
+        && SESSION_VAULT.activeUser.isActive !== false
+        && (SESSION_VAULT.activeUser.kycStatus === "APPROVED"
+            || SESSION_VAULT.activeUser.kycStatus === "VERIFIED_COMPLIANT")
+        && !isSubscriptionActive(SESSION_VAULT.activeUser)
+    ) {
+        showSubscriptionPaywall();
+        return;
+    }
     const tabMap = {
-        Dashboard: "tabContentDashboard",
-        Scanner: "tabContentScanner",
-        AutoTrade: "tabContentAutoTrade",
+        Home: "tabContentHome",
+        Chart: "tabContentChart",
+        Trade: "tabContentTrade",
         NewsAi: "tabContentNewsAi",
-        Positions: "tabContentPositions",
+        ShoonyaPos: "tabContentPosition",
+        Holdings: "tabContentHoldings",
+        Ipo: "tabContentIpo",
         Settings: "tabContentSettings"
     };
 
@@ -6577,13 +6748,33 @@ function switchTab(name) {
     const activeNav = document.getElementById(`navBtn${name}`);
     if (activeNav) activeNav.className = "flex flex-col items-center justify-center text-[#00d09c] font-bold";
 
-    if (name === "AutoTrade") {
-        pollBackendOpportunities();
+    if (name === "ShoonyaPos") {
+        syncRealBrokerBalances();
+        renderTradeHistory();
+        initSyncPositionsToMemory();
+        syncBrokerHoldingsAndOrders();
+        syncServerRiskState();
+        handleOrderSymbolChange();
     }
+    if (name === "Holdings") {
+        renderHoldingsItems();
+        syncBrokerHoldingsAndOrders();
+    }
+    if (name === "NewsAi" && allFetchedNewsItems.length === 0) fetchRealFinancialNews();
+    if (name === "Ipo") {
+        fetchRealIpoData();
+        fetchRealIpoNews();
+        syncAutoTradeState();
+    }
+    if (name === "Chart") initTradingViewChart(currentSelectedAsset?.symbol || "NSE:NIFTY", currentSelectedAsset?.yahooSymbol || "");
     if (name === "Settings") {
-        loadLocalTerminalPreferences();
-        loadLocalRiskConfig();
+        updateVaultStatusBadges();
+        syncRealBrokerBalances();
+        syncServerRiskState();
+        checkSettingsRiskGuardVisibility();
     }
+
+    window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function isNseHoliday(date = new Date()) {
@@ -7177,6 +7368,7 @@ function renderAutoTradeUi() {
 }
 
 async function syncAutoTradeState() {
+    if (!auth.currentUser) return false;
     try {
         const res = await fastApiRequest("/automation/settings");
         if (!res.ok || !res.data?.automation) {
@@ -7202,6 +7394,7 @@ async function syncAutoTradeState() {
 }
 
 async function loadExecutionLog() {
+    if (!auth.currentUser) return;
     try {
         const res = await fastApiRequest("/automation/execution-log", { method: "GET", query: "limit=100" });
         if (res.ok && Array.isArray(res.data?.logs)) {
@@ -7225,6 +7418,7 @@ async function loadExecutionLog() {
 }
 
 async function saveExecutionLogToBackend(entry) {
+    if (!auth.currentUser) return;
     try {
         await fastApiRequest("/automation/execution-log", {
             method: "POST",
@@ -7236,18 +7430,15 @@ async function saveExecutionLogToBackend(entry) {
 }
 
 async function pollBackendOpportunities() {
-    try {
-        const res = await fastApiRequest("/automation/opportunities");
-        if (res.ok && Array.isArray(res.data?.opportunities)) {
-            enqueueOpportunities(res.data.opportunities);
-        }
-    } catch (e) {
-        console.warn("Failed to poll backend opportunities:", e);
+    if (!auth.currentUser || !isTerminalUnlocked) return;
+    const res = await fastApiRequest("/automation/opportunities");
+    if (res.ok && Array.isArray(res.data?.opportunities)) {
+        enqueueOpportunities(res.data.opportunities);
     }
 }
 
 async function runBackendAutomationScan() {
-    if (document.hidden || backendAutomationScanBusy) return;
+    if (!auth.currentUser || !isTerminalUnlocked || document.hidden || backendAutomationScanBusy) return;
     backendAutomationScanBusy = true;
     try {
         const st = window.AUTO_TRADE_STATE || {};
@@ -7572,8 +7763,6 @@ function bootArafTerminal() {
     loadLocalTerminalPreferences();
     loadLocalRiskConfig();
     void startSplashScreen();
-    // Hide splash screen after 1.5s so user sees their personal photo briefly
-    setTimeout(() => { document.getElementById("splashScreen")?.classList.add("hidden"); }, 1500);
     loadNseHolidays();
 
     // Mobile/browser back button: close modals or navigate tabs
@@ -7611,7 +7800,7 @@ function bootArafTerminal() {
         setInterval(() => { if (!document.hidden) runFullMarketDiamondScan(false); }, 45000);
         setInterval(() => {
             const newsPane = document.getElementById("newsFeedList")?.closest("main");
-            if (!document.hidden && newsPane && !newsPane.classList.contains("hidden")) {
+            if (!document.hidden && auth.currentUser && newsPane && !newsPane.classList.contains("hidden")) {
                 fetchRealFinancialNews();
             }
         }, 30000);

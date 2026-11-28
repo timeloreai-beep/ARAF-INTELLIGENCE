@@ -48,7 +48,7 @@
             <div class="w-24 h-24 mx-auto rounded-2xl bg-gradient-to-br from-[#00d09c] to-[#059669] flex items-center justify-center shadow-[0_0_40px_rgba(0,208,156,0.5)] animate-pulse">
                 <i class="fa-solid fa-brain text-4xl text-white"></i>
             </div>
-            <h1 class="text-3xl font-black text-white heading-font">ARAF INTELLIGENCE</h1>
+            <h1 class="text-3xl font-black text-white heading-font tracking-tight">ARAF INTELLIGENCE</h1>
             <p class="text-slate-400 text-sm font-mono">Institutional Market Terminal</p>
             <div class="w-48 h-1.5 mx-auto bg-slate-800 rounded-full overflow-hidden mt-2">
                 <div id="splashProgressBar" class="h-full bg-gradient-to-r from-[#00d09c] to-[#059669] rounded-full transition-all duration-300" style="width: 0%"></div>
@@ -57,9 +57,7 @@
         </div>
     </div>
 
-    <script>setTimeout(function(){var s=document.getElementById('splashScreen');if(s){s.style.display='none';s.classList.add('hidden');}var r=document.getElementById('appRoot');if(r){r.classList.remove('hidden');r.style.display='';}}, 5000)</script>
-
-    <div id="appRoot" class="min-h-screen">
+    <div id="appRoot" class="hidden">
         <header id="topBar" class="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 px-3 py-2 flex items-center justify-between gap-2">
             <div class="flex items-center gap-2 shrink-0">
                 <div class="w-7 h-7 rounded-xl bg-gradient-to-br from-[#00d09c] to-[#059669] flex items-center justify-center shadow-lg">
@@ -67,6 +65,7 @@
                 </div>
                 <div>
                     <h1 class="text-xs font-black text-slate-900 heading-font">ARAF INTELLIGENCE</h1>
+                    <p class="text-[8.5px] text-slate-500 font-mono">Institutional Terminal</p>
                 </div>
             </div>
             <div class="flex items-center gap-1.5 ml-auto shrink-0">
@@ -86,7 +85,7 @@
 
         <div id="toastContainer" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
-        <main class="p-3 space-y-3.5 w-full text-xs">
+        <main class="p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
             <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
                 <button onclick="switchTab('dashboard')" id="tabBtn_dashboard" class="flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm"><i class="fa-solid fa-chart-line mr-1"></i> Dashboard</button>
                 <button onclick="switchTab('scanner')" id="tabBtn_scanner" class="flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition"><i class="fa-solid fa-radar mr-1"></i> Scanner</button>
@@ -195,7 +194,7 @@
                 </div>
             </main>
 
-            <main id="tabContentScanner" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
+            <main id="tabContentScanner" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
                 <div class="groww-card p-3.5 space-y-3 bg-white">
                     <div class="flex items-center justify-between">
                         <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-radar text-[#00d09c] mr-2"></i> Universe Scanner</h3>
@@ -250,7 +249,7 @@
                 </div>
             </main>
 
-            <main id="tabContentAutoTrade" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
+            <main id="tabContentAutoTrade" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
                 <div class="groww-card p-3.5 shadow-sm space-y-2 bg-white">
                     <div class="flex items-center justify-between">
                         <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-robot text-[#00d09c] mr-2"></i> Auto Trade & IPO</h3>
@@ -349,7 +348,7 @@
                     </div>
                 </main>
 
-            <main id="tabContentNewsAi" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
+            <main id="tabContentNewsAi" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
                 <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
                     <button onclick="switchNewsAiSubTab('ai')" id="subTabBtn_ai" class="flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm">🧠 AI Guardian</button>
                     <button onclick="switchNewsAiSubTab('news')" id="subTabBtn_news" class="flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition">📰 Market News</button>
@@ -403,7 +402,7 @@
                             <div class="flex space-x-1 text-[8.5px] font-mono font-bold" id="newsLanguagePillsContainer">
                                 <button onclick="setNewsDigestLanguage('en-US')" id="btnNewsLang_en" class="px-2 py-0.5 rounded bg-[#00d09c] text-white font-black">EN</button>
                                 <button onclick="setNewsDigestLanguage('bn-IN')" id="btnNewsLang_bn" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">বাংলা</button>
-                                <button onclick="setNewsDigestLanguage('hi-IN')" id="btnNewsLang_hi" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">হিনি</button>
+                                <button onclick="setNewsDigestLanguage('hi-IN')" id="btnNewsLang_hi" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">हिंदी</button>
                                 <button onclick="setNewsDigestLanguage('gu-IN')" id="btnNewsLang_gu" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">ગુજ</button>
                                 <button onclick="setNewsDigestLanguage('mr-IN')" id="btnNewsLang_mr" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">मराठी</button>
                                 <button onclick="setNewsDigestLanguage('ta-IN')" id="btnNewsLang_ta" class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">தமிழ்</button>
@@ -426,7 +425,7 @@
                 </div>
             </main>
 
-            <main id="tabContentPositions" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
+            <main id="tabContentPositions" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
                 <div class="groww-card p-3.5 shadow-sm space-y-3 bg-white">
                     <div class="flex items-center justify-between">
                         <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-briefcase text-[#00d09c] mr-2"></i> Positions & P&L</h3>
@@ -442,16 +441,16 @@
                 </div>
             </main>
 
-            <main id="tabContentSettings" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
+            <main id="tabContentSettings" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
                 <div class="groww-card p-3.5 shadow-sm space-y-4 bg-white">
-                    <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-user-shield text-[#00d09c] mr-2"></i> Broker Vault & Settings</h3>
+                    <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-user-shield text-[#00d09c] mr-2"></i> Broker Vault & KYC</h3>
                     <div class="space-y-3">
                         <div class="groww-card p-3 bg-slate-50 border border-slate-200 rounded-xl">
                             <div class="flex items-center justify-between mb-2">
-                                <span class="text-xs font-bold text-slate-900">Broker Status</span>
-                                <span id="kycStatusBadge" class="px-2 py-0.5 rounded-full text-[8px] font-mono font-bold bg-slate-200 text-slate-600">CONNECTED</span>
+                                <span class="text-xs font-bold text-slate-900">KYC Status</span>
+                                <span id="kycStatusBadge" class="px-2 py-0.5 rounded-full text-[8px] font-mono font-bold bg-slate-200 text-slate-600">PENDING</span>
                             </div>
-                            <p class="text-[9px] text-slate-500">Brokers are linked and ready</p>
+                            <p class="text-[9px] text-slate-500">KYC must be APPROVED to link brokers</p>
                         </div>
                         <div class="groww-card p-3 bg-white border border-slate-200 rounded-xl space-y-3">
                             <div class="flex items-center justify-between">
@@ -465,7 +464,7 @@
                             <div class="grid grid-cols-3 gap-2 text-[10px]">
                                 <input type="password" id="settingShoonyaPassword" placeholder="Password" class="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-[#00d09c]">
                                 <input type="text" id="settingShoonyaTotp" placeholder="TOTP / PAN" maxlength="6" class="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-[#00d09c] text-center font-mono tracking-widest">
-                                <input type="text" id="settingShoonyaApiKey" placeholder="API Key" class="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-900 focus:outline-none focus-border-[#00d09c]">
+                                <input type="text" id="settingShoonyaApiKey" placeholder="API Key" class="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-[#00d09c]">
                             </div>
                             <div class="flex space-x-1.5">
                                 <button onclick="saveShoonyaVaultToRamAndCloud()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-2 rounded-xl text-[9.5px] border border-slate-300 transition">Save Token</button>
@@ -498,3 +497,409 @@
                 </div>
 
                 <div class="groww-card p-3.5 shadow-sm space-y-4 bg-white">
+                    <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-palette text-[#00d09c] mr-2"></i> Theme & Appearance</h3>
+                    <div class="space-y-3">
+                        <label class="flex flex-col gap-1.5">
+                            <span class="text-[8px] text-slate-500 font-mono">Theme</span>
+                            <div class="flex space-x-2">
+                                <button onclick="setTheme('light')" id="themeBtnLight" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#00d09c]"><i class="fa-solid fa-sun mr-1"></i> Light</button>
+                                <button onclick="setTheme('dark')" id="themeBtnDark" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#00d09c]"><i class="fa-solid fa-moon mr-1"></i> Dark</button>
+                            </div>
+                        </label>
+                        <label class="flex flex-col gap-1.5">
+                            <span class="text-[8px] text-slate-500 font-mono">Accent Color</span>
+                            <div class="flex space-x-2">
+                                <button onclick="setAccent('mint')" id="accentBtnMint" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#00d09c]">Mint</button>
+                                <button onclick="setAccent('emerald')" id="accentBtnEmerald" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#059669]">Emerald</button>
+                                <button onclick="setAccent('blue')" id="accentBtnBlue" class="flex-1 px-3 py-2 rounded-xl bg-white border-2 border-slate-200 text-slate-700 font-bold text-[10px] transition hover:border-[#3b82f6]">Blue</button>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="groww-card p-3.5 shadow-sm space-y-4 bg-white">
+                    <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-bell text-amber-500 mr-2"></i> Alerts & Notifications</h3>
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-2"><input type="checkbox" id="alertIntradaySqOff" class="w-4 h-4 accent-[#00d09c] rounded border-slate-300"><span class="text-[10px] text-slate-700">Intraday Square-off Warning (3:10 PM)</span></label>
+                        <label class="flex items-center gap-2"><input type="checkbox" id="alertNewsCatalyst" class="w-4 h-4 accent-[#00d09c] rounded border-slate-300"><span class="text-[10px] text-slate-700">Breaking News Catalyst Alerts</span></label>
+                        <label class="flex items-center gap-2"><input type="checkbox" id="alertRiskLock" class="w-4 h-4 accent-[#00d09c] rounded border-slate-300"><span class="text-[10px] text-slate-700">Risk Lock Notifications</span></label>
+                        <label class="flex items-center gap-2"><input type="checkbox" id="alertAiGuardian" class="w-4 h-4 accent-[#00d09c] rounded border-slate-300"><span class="text-[10px] text-slate-700">AI Guardian Insights</span></label>
+                    </div>
+                </div>
+
+                <div class="groww-card p-3.5 shadow-sm space-y-4 bg-white">
+                    <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-lock text-slate-600 mr-2"></i> Security</h3>
+                    <div class="flex space-x-2">
+                        <button onclick="changeMasterPin()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-2 rounded-xl text-[9.5px] border border-slate-300 transition">Change Master PIN</button>
+                        <button onclick="setupBiometric()" id="btnBiometricToggle" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-2 rounded-xl text-[9.5px] border border-slate-300 transition">Enable Biometric</button>
+                    </div>
+                </div>
+
+                <div class="groww-card p-3.5 shadow-sm space-y-4 bg-white">
+                    <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-trash text-[#eb5b3c] mr-2"></i> Account</h3>
+                    <div class="space-y-2">
+                        <button onclick="requestAccountDeletion()" class="w-full bg-[#eb5b3c]/10 border border-[#eb5b3c]/30 text-[#eb5b3c] font-bold py-2 rounded-xl text-[9.5px] transition">Delete Account Permanently</button>
+                        <p class="text-[8.5px] text-slate-500 font-mono">15-second confirmation timer • Admin approval required • GDPR compliant cascade wipeout</p>
+                    </div>
+                </div>
+            </main>
+        </main>
+
+        <!-- Account Deletion: 15-Second Countdown Modal -->
+        <div id="accountDeletionCountdownModal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card border border-[#eb5b3c]/40 w-full max-w-md p-4 space-y-3 shadow-2xl bg-white relative">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-sm font-extrabold text-[#eb5b3c] heading-font">⚠️ Delete Account Permanently</h3>
+                    <button type="button" onclick="cancelAccountDeletion()" aria-label="Close" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center"><i class="fa-solid fa-xmark text-sm"></i></button>
+                </div>
+                <div class="text-center space-y-2">
+                    <p class="text-slate-700 text-sm">This action will <span class="font-bold text-[#eb5b3c]">permanently delete</span> your account and all data.</p>
+                    <p class="text-slate-500 text-xs font-mono">This action is irreversible. All positions, orders, KYC, broker credentials, and history will be permanently wiped.</p>
+                    <div class="bg-[#eb5b3c]/10 border border-[#eb5b3c]/20 rounded-xl p-3 text-center">
+                        <p class="text-[8px] text-slate-500 font-mono uppercase tracking-wide">Time Remaining</p>
+                        <p id="accountDeletionCountdown" class="text-4xl font-black text-[#eb5b3c] mono-font">15.00</p>
+                        <p class="text-[8px] text-slate-500 font-mono">seconds to cancel</p>
+                    </div>
+                    <p class="text-[9px] text-slate-500 font-mono">Click Cancel to abort, or wait for auto-submission</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Account Deletion: Final Confirmation Modal -->
+        <div id="accountDeletionConfirmModal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card border border-[#eb5b3c]/40 w-full max-w-md p-4 space-y-3 shadow-2xl bg-white relative">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-sm font-extrabold text-[#eb5b3c] heading-font">⚠️ Anyway Permanent Delete?</h3>
+                    <button type="button" onclick="dismissAccountDeletionConfirm()" aria-label="Close" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center"><i class="fa-solid fa-xmark text-sm"></i></button>
+                </div>
+                <div class="space-y-2 text-center">
+                    <p class="text-slate-700 text-sm">This is your <span class="font-bold text-[#eb5b3c]">final confirmation</span>.</p>
+                    <p class="text-slate-500 text-xs">All data will be <span class="font-bold">permanently erased</span>. This cannot be undone.</p>
+                    <div class="flex space-x-2">
+                        <button onclick="confirmAccountDeletion()" class="flex-1 bg-[#eb5b3c] text-white py-2.5 rounded-xl text-[10px] font-black active:scale-95 transition shadow">YES, DELETE FOREVER</button>
+                        <button onclick="dismissAccountDeletionConfirm()" class="flex-1 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-[10px] transition">NO, KEEP MY ACCOUNT</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Account Deletion: Pending Lock Screen -->
+        <div id="accountDeletionPendingModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card w-full max-w-md p-6 space-y-4 text-center bg-white">
+                <div class="w-16 h-16 mx-auto rounded-full bg-[#eb5b3c]/10 border border-[#eb5b3c]/20 flex items-center justify-center">
+                    <i class="fa-solid fa-hourglass-half text-2xl text-[#eb5b3c]"></i>
+                </div>
+                <h3 class="text-lg font-extrabold text-slate-900 heading-font">Account Deletion Pending</h3>
+                <p class="text-slate-600 text-sm">Your account deletion request has been submitted and is awaiting admin approval.</p>
+                <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-left">
+                    <p class="text-[9px] text-amber-700 font-mono font-bold">Status: DELETION_PENDING</p>
+                    <p class="text-[9px] text-amber-700 font-mono mt-1">Admin review required • GDPR compliant cascade wipeout</p>
+                </div>
+                <p class="text-slate-500 text-xs font-mono">You cannot access the terminal until this request is resolved.</p>
+                <button onclick="cancelAccountDeletion()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-[9.5px] transition" disabled>Cancellation Window Expired</button>
+            </div>
+        </div>
+            <div class="groww-card border border-[#00d09c]/40 w-full max-w-md p-3 space-y-2 shadow-2xl opportunity-glow relative bg-white">
+                <button type="button" onclick="dismissOpportunityPopup()" aria-label="Close" class="absolute top-1 right-1 w-6 h-6 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center transition"><i class="fa-solid fa-xmark text-xs"></i></button>
+                <div class="flex items-center justify-between">
+                    <span id="oppPopupScoreBadge" class="bg-[#00d09c] text-white px-2 py-0.5 rounded-full font-black text-[9px]">Score: --%</span>
+                    <span id="oppPopupTimerBadge" class="bg-slate-900 text-white px-2.5 py-0.5 rounded-full font-black text-[9px]">⏱ 15s</span>
+                </div>
+                <div class="flex items-center justify-between text-[9px] font-mono">
+                    <span id="oppPopupTitle" class="font-black text-slate-900">SYMBOL</span>
+                    <span id="oppPopupDirBadge" class="px-1.5 py-0.5 rounded font-black">BUY</span>
+                </div>
+                <div class="grid grid-cols-3 gap-1.5 text-[9px] font-mono bg-slate-50 p-1.5 rounded border border-slate-200">
+                    <div><span class="text-slate-500">Entry</span><b id="oppPopupEntry" class="text-slate-900">--</b></div>
+                    <div><span class="text-slate-500">SL</span><b id="oppPopupSL" class="text-[#eb5b3c]">--</b></div>
+                    <div><span class="text-slate-500">Target</span><b id="oppPopupTarget" class="text-[#00d09c]">--</b></div>
+                </div>
+                <div class="flex items-center justify-between text-[9px] font-mono">
+                    <span id="oppPopupRrBadge" class="text-slate-600">R:R --</span>
+                    <span id="oppPopupRiskBadge" class="text-amber-600">₹--</span>
+                </div>
+                <div class="flex items-center justify-between text-[8px] font-mono pt-1 border-t border-slate-200">
+                    <span id="oppPopupNetProfitBadge" class="text-[#059669] font-black">Net: ₹--</span>
+                    <span id="oppPopupRiskVetoBadge" class="text-[#eb5b3c] font-black hidden">AVOID RISK</span>
+                </div>
+                <div class="flex space-x-1.5 pt-0.5">
+                    <button onclick="executeOpportunityTradeNow()" id="btnExecuteOpp" class="flex-1 groww-btn-green py-2 rounded-xl text-[9px] font-black active:scale-95 transition shadow flex items-center justify-center space-x-1">
+                        <i class="fa-solid fa-bolt text-xs"></i> <span>EXECUTE</span>
+                    </button>
+                    <button type="button" onclick="dismissOpportunityPopup()" class="w-24 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold py-2 rounded-xl text-[9px] transition">DISMISS</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="assetDetailModal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm hidden flex items-end sm:items-center justify-center p-0 sm:p-3">
+            <div class="groww-card rounded-t-3xl sm:rounded-3xl w-full max-w-md p-4 space-y-3 max-h-[92vh] overflow-y-auto scrollbar-hidden shadow-2xl bg-white">
+                <div class="flex items-start justify-between border-b border-slate-200 pb-2.5">
+                    <div>
+                        <h3 id="assetDetailTitle" class="text-sm font-extrabold text-slate-900 heading-font">Asset Details</h3>
+                        <p id="assetDetailSubtitle" class="text-[9px] text-slate-500 mono-font mt-0.5">Live market details</p>
+                    </div>
+                    <button type="button" onclick="closeAssetDetailModal()" aria-label="Close asset details" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center"><i class="fa-solid fa-xmark text-sm"></i></button>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-[10px] mono-font">
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Open</span><b id="assetDetailOpen" class="text-slate-900">--</b></div>
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Prev Close</span><b id="assetDetailPrevClose" class="text-slate-900">--</b></div>
+                    <div class="bg-[#00d09c]/10 border border-[#00d09c]/20 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Day High / Low</span><b id="assetDetailDayRange" class="text-[#059669]">-- / --</b></div>
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">52W High / Low</span><b id="assetDetail52Range" class="text-slate-900">-- / --</b></div>
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Volume</span><b id="assetDetailVolume" class="text-slate-900">--</b></div>
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5"><span class="text-slate-500 text-[8px] block">Sector</span><b id="assetDetailSector" class="text-slate-900">--</b></div>
+                </div>
+                <div id="assetDetailNews" class="space-y-1.5 text-[10px]"></div>
+                <div class="grid grid-cols-2 gap-2">
+                    <button type="button" id="assetDetailChartBtn" class="groww-btn-green py-2.5 rounded-xl text-xs font-bold">Open Chart</button>
+                    <button type="button" id="assetDetailTradeBtn" class="bg-slate-100 border border-slate-200 text-slate-800 py-2.5 rounded-xl text-xs font-bold">Trade</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="orderToastModal" class="fixed bottom-4 right-4 z-40 hidden flex items-center gap-2 bg-white border border-slate-200 rounded-xl p-3 shadow-xl max-w-sm">
+            <div class="flex-1">
+                <p id="toastCandleTitle" class="text-xs font-black text-slate-900">Order Status</p>
+                <p id="toastCandleDesc" class="text-[10px] text-slate-600 mt-0.5 leading-tight font-medium"></p>
+            </div>
+            <button onclick="event.stopPropagation(); dismissOpportunityToast()" class="text-slate-400 hover:text-slate-900 text-xs p-1"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <!-- Authentication Modals -->
+        <div id="authKycModal" class="fixed inset-0 z-[60] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card w-full max-w-md p-4 space-y-4 bg-white relative">
+                <button type="button" onclick="handleSafeAuthModalClose()" aria-label="Close" class="absolute top-2 right-2 w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center"><i class="fa-solid fa-xmark text-sm"></i></button>
+
+                <!-- Step 1: Phone/Email Entry -->
+                <div id="authStepPhone" class="space-y-3">
+                    <div class="text-center">
+                        <h2 class="text-lg font-extrabold text-slate-900 heading-font">Welcome to ARAF</h2>
+                        <p class="text-slate-500 text-sm mt-1">Sign in to access your Institutional Terminal</p>
+                    </div>
+                    <div id="authCustomErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+
+                    <div class="space-y-3">
+                        <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
+                            <button onclick="switchAuthMode('LOGIN')" id="tabAuthLogin" class="flex-1 py-2 rounded-xl groww-btn-green transition shadow-sm font-black">Login</button>
+                            <button onclick="switchAuthMode('SIGNUP')" id="tabAuthSignup" class="flex-1 py-2 rounded-xl text-slate-500 hover:text-slate-900 transition font-bold">Sign Up</button>
+                        </div>
+
+                        <form id="formClientIdLogin" class="space-y-3" onsubmit="event.preventDefault(); handleTraderUidLogin()">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Trader UID or Email</label>
+                                <input type="text" id="loginTraderUid" autocomplete="username" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Password</label>
+                                <input type="password" id="loginPassword" autocomplete="current-password" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <button type="submit" id="btnLoginUidSubmit" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95"><i class="fa-solid fa-lock-open mr-1"></i> <span>Login Securely</span></button>
+                        </form>
+
+                        <form id="formNewRegistration" class="space-y-3 hidden" onsubmit="event.preventDefault(); handleNewUserSignup()">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Email Address</label>
+                                <input type="email" id="signupEmailInput" autocomplete="email" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Password (min 6 chars)</label>
+                                <input type="password" id="signupPasswordInput" autocomplete="new-password" required minlength="6" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Confirm Password</label>
+                                <input type="password" id="signupConfirmPasswordInput" autocomplete="new-password" required minlength="6" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <button type="submit" id="btnSignupSubmit" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95"><i class="fa-solid fa-user-plus mr-1"></i> <span>Verify Gmail OTP & Create Account</span></button>
+                        </form>
+
+                        <div class="relative">
+                            <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-200"></div></div>
+                            <div class="relative flex justify-center text-sm">
+                                <span class="px-2 bg-white text-slate-500">Or continue with</span>
+                            </div>
+                        </div>
+                        <button onclick="handleGoogleOneTapLogin()" class="w-full flex items-center justify-center gap-2 bg-white border border-slate-200 text-slate-700 py-2.5 rounded-xl text-sm font-bold hover:bg-slate-50 transition"><i class="fa-brands fa-google text-lg"></i> Google One-Tap</button>
+
+                        <div id="firebaseEmailVerifyBackupBox" class="hidden bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                            <p class="text-sm text-amber-800">Email verification required. Click the link sent to your inbox.</p>
+                            <button onclick="sendFirebaseVerificationBackup()" class="w-full bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold py-2 rounded-xl text-sm transition">Resend Verification Email</button>
+                            <button onclick="recheckFirebaseEmailVerified()" class="w-full bg-white border border-slate-200 text-slate-700 font-bold py-2 rounded-xl text-sm transition">I've Verified - Check Again</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2: KYC Form -->
+                <div id="authStepKyc" class="space-y-3 hidden">
+                    <div class="text-center">
+                        <h2 class="text-lg font-extrabold text-slate-900 heading-font">Complete Your KYC</h2>
+                        <p class="text-slate-500 text-sm mt-1">Required for regulatory compliance</p>
+                    </div>
+                    <div id="kycErrorBanner" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                    <form onsubmit="event.preventDefault(); handleSubmitForVerification()" class="space-y-3">
+                        <div>
+                            <label class="text-[8px] text-slate-500 font-mono block mb-1">Full Legal Name</label>
+                            <input type="text" id="kycFullName" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Date of Birth</label>
+                                <input type="date" id="kycDob" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Phone Number</label>
+                                <input type="tel" id="kycPhone" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-[8px] text-slate-500 font-mono block mb-1">PAN Number</label>
+                            <input type="text" id="kycPanNumber" required maxlength="10" placeholder="ABCDE1234F" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c] uppercase">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Aadhaar (Last 4 Digits)</label>
+                                <input type="text" id="kycAadhaarLast4" required maxlength="4" inputmode="numeric" pattern="[0-9]*" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c] text-center tracking-widest">
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Income Bracket</label>
+                                <select id="kycIncome" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                                    <option value="<5L">Below ₹5 Lakhs</option>
+                                    <option value="5L-10L">₹5-10 Lakhs</option>
+                                    <option value="10L-25L">₹10-25 Lakhs</option>
+                                    <option value="25L-50L">₹25-50 Lakhs</option>
+                                    <option value="50L-1CR">₹50 Lakhs - 1 Crore</option>
+                                    <option value=">1CR">Above ₹1 Crore</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Trading Experience</label>
+                                <select id="kycExperience" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                                    <option value="BEGINNER">Beginner (< 1 year)</option>
+                                    <option value="INTERMEDIATE">Intermediate (1-3 years)</option>
+                                    <option value="ADVANCED">Advanced (3-5 years)</option>
+                                    <option value="EXPERT">Expert (5+ years)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-[8px] text-slate-500 font-mono block mb-1">Authorized Segment</label>
+                                <select id="kycSegment" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                                    <option value="EQUITY">Equity</option>
+                                    <option value="FNO">F&O</option>
+                                    <option value="BOTH">Both Equity & F&O</option>
+                                    <option value="COMMODITY">Commodity</option>
+                                    <option value="CURRENCY">Currency</option>
+                                </select>
+                            </div>
+                        </div>
+                        <label class="flex items-start gap-2">
+                            <input type="checkbox" id="kycRiskConsent" required class="w-4 h-4 mt-0.5 accent-[#00d09c] rounded border-slate-300">
+                            <span class="text-sm text-slate-700">I understand trading involves substantial risk of loss and I accept full responsibility for my trading decisions.</span>
+                        </label>
+                        <button type="submit" id="btnSubmitKyc" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95"><i class="fa-solid fa-file-shield"></i> <span>Submit Verification to Admin Review</span></button>
+                    </form>
+                </div>
+
+                <!-- Step 3: Pending Admin Approval -->
+                <div id="authStepPending" class="space-y-3 hidden text-center">
+                    <div class="w-16 h-16 mx-auto rounded-full bg-amber-100 border border-amber-200 flex items-center justify-center">
+                        <i class="fa-solid fa-hourglass-half text-2xl text-amber-600"></i>
+                    </div>
+                    <h3 class="text-lg font-extrabold text-slate-900 heading-font">Pending Admin Approval</h3>
+                    <p class="text-slate-600 text-sm">Your compliance profile has been submitted to ARAF Admin Desk.</p>
+                    <p class="text-slate-500 text-xs mt-1">Your app will unlock immediately upon verification.</p>
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left space-y-1">
+                        <div class="flex justify-between"><span class="text-[8px] text-slate-500 font-mono">Name</span><b id="pendingUserName" class="text-slate-900">-</b></div>
+                        <div class="flex justify-between"><span class="text-[8px] text-slate-500 font-mono">Trader UID</span><b id="pendingUserUid" class="text-slate-900">-</b></div>
+                        <div class="flex justify-between"><span class="text-[8px] text-slate-500 font-mono">PAN</span><b id="pendingUserPan" class="text-slate-900">-</b></div>
+                        <div class="flex justify-between"><span class="text-[8px] text-slate-500 font-mono">KYC Status</span><b id="pendingUserKycStatus" class="text-amber-600">PENDING_ADMIN_REVIEW</b></div>
+                    </div>
+                    <button onclick="handleAuthBackNavigation()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 rounded-xl text-sm transition">Back to Login</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Account Recovery / OTP Modal -->
+        <div id="accountRecoveryModal" class="fixed inset-0 z-[60] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card w-full max-w-md p-4 space-y-4 bg-white relative">
+                <button type="button" onclick="closeAccountRecoveryModal()" aria-label="Close" class="absolute top-2 right-2 w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 flex items-center justify-center"><i class="fa-solid fa-xmark text-sm"></i></button>
+
+                <!-- Step 1: Email Entry -->
+                <div id="recoveryStepEmail" class="space-y-3 text-center">
+                    <h2 class="text-lg font-extrabold text-slate-900 heading-font" id="recoveryTitle">Account Recovery</h2>
+                    <p class="text-slate-500 text-sm" id="recoverySubtitle">Enter your email to receive a 6-digit OTP</p>
+                    <div id="recoveryErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                    <div>
+                        <label class="text-[8px] text-slate-500 font-mono block mb-1">Email Address</label>
+                        <input type="email" id="recoveryEmailInput" autocomplete="email" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                    <button onclick="sendRecoveryOtpToEmail()" id="btnSendOtp" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Send OTP to Email</button>
+                    <button onclick="sendPinResetServerOtp()" id="btnSendPinOtp" class="hidden w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Send PIN Reset OTP</button>
+                </div>
+
+                <!-- Step 2: OTP Input -->
+                <div id="recoveryStepOtp" class="space-y-3 hidden text-center">
+                    <h2 class="text-lg font-extrabold text-slate-900 heading-font">Verify OTP</h2>
+                    <p class="text-slate-500 text-sm">A 6-digit code has been sent to <b id="displayTargetEmail"></b></p>
+                    <div id="recoveryErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                    <div>
+                        <label class="text-[8px] text-slate-500 font-mono block mb-1">Enter 6-Digit OTP</label>
+                        <input type="text" id="recoveryOtpInput" inputmode="numeric" maxlength="6" pattern="[0-9]*" required autocomplete="one-time-code" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                    <button onclick="verifyRecoveryOtp()" id="btnVerifyOtpSubmit" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Verify OTP Code</button>
+                    <button onclick="backToSignupEmailStep()" class="w-full bg-white border border-slate-200 text-slate-700 font-bold py-2 rounded-xl text-sm transition mt-2">Back</button>
+                </div>
+
+                <!-- Step 3: Reset PIN/Password -->
+                <div id="recoveryStepReset" class="space-y-3 hidden text-center">
+                    <h2 class="text-lg font-extrabold text-slate-900 heading-font">Set New Master PIN</h2>
+                    <p class="text-slate-500 text-sm">Your Trader UID: <b id="recoveredTraderUidText"></b></p>
+                    <div id="recoveryErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                    <div>
+                        <label class="text-[8px] text-slate-500 font-mono block mb-1">New 6-Digit PIN</label>
+                        <input type="password" id="resetNewPin" inputmode="numeric" maxlength="6" pattern="[0-9]*" required autocomplete="new-password" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                    </div>
+                    <button onclick="finalizeAccountCredentialsReset()" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Save PIN & Unlock</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Unlock Modal (PIN Entry) -->
+        <div id="quickUnlockModal" class="fixed inset-0 z-[60] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card w-full max-w-md p-4 space-y-4 bg-white relative">
+                <h2 class="text-lg font-extrabold text-slate-900 heading-font text-center" id="unlockWelcomeTitle">Welcome back!</h2>
+                <p class="text-slate-500 text-sm text-center">Enter your 6-digit Master PIN to unlock</p>
+                <div id="unlockErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                <div>
+                    <label class="text-[8px] text-slate-500 font-mono block mb-1">Master PIN</label>
+                    <input type="password" id="pinDigitInput" inputmode="numeric" maxlength="6" pattern="[0-9]*" autocomplete="one-time-code" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <button onclick="handlePinSubmitUnlock()" id="btnSubmitUnlock" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95"><i class="fa-solid fa-lock-open mr-1"></i> <span>Unlock App</span></button>
+                <div class="flex justify-center gap-3 mt-2">
+                    <button onclick="handleForgotPinReset()" class="text-sm text-[#00d09c] font-bold hover:underline">Forgot PIN?</button>
+                    <button onclick="handleSwitchAccountOrDevice()" class="text-sm text-slate-500 font-bold hover:text-slate-700">Switch Account</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Setup PIN Modal (First Time) -->
+        <div id="setupPinModal" class="fixed inset-0 z-[60] bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 hidden">
+            <div class="groww-card w-full max-w-md p-4 space-y-4 bg-white relative">
+                <h2 class="text-lg font-extrabold text-slate-900 heading-font text-center">Set Your Master PIN</h2>
+                <p class="text-slate-500 text-sm text-center">Create a 6-digit PIN to secure your terminal</p>
+                <div id="setupPinErrorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm p-2 rounded-xl"></div>
+                <div>
+                    <label class="text-[8px] text-slate-500 font-mono block mb-1">New PIN</label>
+                    <input type="password" id="newPinInput" inputmode="numeric" maxlength="6" pattern="[0-9]*" autocomplete="new-password" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <div>
+                    <label class="text-[8px] text-slate-500 font-mono block mb-1">Confirm PIN</label>
+                    <input type="password" id="confirmPinInput" inputmode="numeric" maxlength="6" pattern="[0-9]*" autocomplete="new-password" required class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-center text-2xl font-mono tracking-widest text-slate-900 focus:outline-none focus:border-[#00d09c]">
+                </div>
+                <button onclick="handleSaveInitialPinAndBiometric()" id="btnSaveInitialPin" class="w-full groww-btn-green py-2.5 rounded-xl text-sm font-black transition shadow active:scale-95">Save PIN Securely</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js?v=20261125"></script>
+</body>
+</html>
