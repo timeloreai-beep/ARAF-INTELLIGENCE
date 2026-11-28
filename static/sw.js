@@ -1,7 +1,14 @@
 const CACHE_NAME = "araf-v3";
 const NETWORK_FIRST_URLS = ["/", "/index.html", "/app.js", "/style.css", "/engines.js"];
 
+self.addEventListener("install", (event) => {
+  event.waitUntil(self.skipWaiting());
+});
+
 self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    clients.claim()
+  );
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
