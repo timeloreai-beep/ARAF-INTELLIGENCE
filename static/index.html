@@ -57,7 +57,7 @@
         </div>
     </div>
 
-    <script>setTimeout(function(){var s=document.getElementById('splashScreen');if(s){s.style.display='none';s.classList.add('hidden');}var r=document.getElementById('appRoot');if(r){r.classList.remove('hidden');r.style.display='';}}, 1200)</script>
+    <script>setTimeout(function(){var s=document.getElementById('splashScreen');if(s){s.style.display='none';s.classList.add('hidden');}var r=document.getElementById('appRoot');if(r){r.classList.remove('hidden');r.style.display='';}}, 5000)</script>
 
     <div id="appRoot" class="min-h-screen">
         <header id="topBar" class="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 px-3 py-2 flex items-center justify-between gap-2">
@@ -67,7 +67,6 @@
                 </div>
                 <div>
                     <h1 class="text-xs font-black text-slate-900 heading-font">ARAF INTELLIGENCE</h1>
-                    <p class="text-[8.5px] text-slate-500 font-mono">Institutional Terminal</p>
                 </div>
             </div>
             <div class="flex items-center gap-1.5 ml-auto shrink-0">
@@ -87,7 +86,7 @@
 
         <div id="toastContainer" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
-        <main class="p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+        <main class="p-3 space-y-3.5 w-full text-xs">
             <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
                 <button onclick="switchTab('dashboard')" id="tabBtn_dashboard" class="flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm"><i class="fa-solid fa-chart-line mr-1"></i> Dashboard</button>
                 <button onclick="switchTab('scanner')" id="tabBtn_scanner" class="flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition"><i class="fa-solid fa-radar mr-1"></i> Scanner</button>
@@ -196,7 +195,7 @@
                 </div>
             </main>
 
-            <main id="tabContentScanner" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+            <main id="tabContentScanner" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
                 <div class="groww-card p-3.5 space-y-3 bg-white">
                     <div class="flex items-center justify-between">
                         <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-radar text-[#00d09c] mr-2"></i> Universe Scanner</h3>
@@ -251,7 +250,7 @@
                 </div>
             </main>
 
-            <main id="tabContentAutoTrade" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+            <main id="tabContentAutoTrade" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
                 <div class="groww-card p-3.5 shadow-sm space-y-2 bg-white">
                     <div class="flex items-center justify-between">
                         <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-robot text-[#00d09c] mr-2"></i> Auto Trade & IPO</h3>
@@ -350,7 +349,7 @@
                     </div>
                 </main>
 
-            <main id="tabContentNewsAi" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+            <main id="tabContentNewsAi" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
                 <div class="flex space-x-1 font-mono text-[10px] font-bold bg-slate-200 p-1 rounded-2xl border border-slate-300">
                     <button onclick="switchNewsAiSubTab('ai')" id="subTabBtn_ai" class="flex-1 py-2 rounded-xl bg-white text-slate-900 font-black transition shadow-sm">🧠 AI Guardian</button>
                     <button onclick="switchNewsAiSubTab('news')" id="subTabBtn_news" class="flex-1 py-2 rounded-xl text-slate-600 hover:text-slate-900 transition">📰 Market News</button>
@@ -427,7 +426,7 @@
                 </div>
             </main>
 
-            <main id="tabContentPositions" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+            <main id="tabContentPositions" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
                 <div class="groww-card p-3.5 shadow-sm space-y-3 bg-white">
                     <div class="flex items-center justify-between">
                         <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-briefcase text-[#00d09c] mr-2"></i> Positions & P&L</h3>
@@ -443,7 +442,7 @@
                 </div>
             </main>
 
-            <main id="tabContentSettings" class="tab-page hidden p-3 space-y-3.5 max-w-md md:max-w-6xl lg:max-w-7xl mx-auto w-full text-xs">
+            <main id="tabContentSettings" class="tab-page hidden p-3 space-y-3.5 w-full text-xs">
                 <div class="groww-card p-3.5 shadow-sm space-y-4 bg-white">
                     <h3 class="text-xs font-black text-slate-900 flex items-center heading-font"><i class="fa-solid fa-user-shield text-[#00d09c] mr-2"></i> Broker Vault & Settings</h3>
                     <div class="space-y-3">
